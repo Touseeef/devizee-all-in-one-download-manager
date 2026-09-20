@@ -1,0 +1,146 @@
+/*
+  Devizee Design Tokens — Tailwind v4
+  Drop this into src/App.css, ABOVE the existing @import "tailwindcss";
+  content, or merge the @theme block into it. Do not duplicate @import.
+
+  Tailwind v4 turns every --color-*, --radius-*, --shadow-*, --text-*
+  variable below into real utility classes automatically:
+    --color-surface-1   ->  bg-surface-1 / text-surface-1 / border-surface-1
+    --radius-lg          ->  rounded-lg
+    --shadow-raised       ->  shadow-raised
+  So components use bg-surface-1, rounded-lg, shadow-raised, etc. directly.
+
+  Dark is the default (matches the app's current obsidian direction).
+  Light overrides live in the [data-theme="light"] block at the bottom —
+  wire this attribute to the existing theme toggle state instead of
+  conditional className strings everywhere.
+*/
+
+@import "tailwindcss";
+
+@theme {
+  /* ---- Surfaces (dark = default) ---- */
+  --color-surface-0: #09090b;   /* app background */
+  --color-surface-1: #111114;   /* cards, panels, input fields */
+  --color-surface-2: #19191d;   /* hover state, nested/inset areas */
+  --color-surface-3: #212126;   /* modals, popovers, context menus */
+
+  /* ---- Borders ---- */
+  --color-border-subtle: rgb(255 255 255 / 0.08);
+  --color-border-strong: rgb(255 255 255 / 0.16);
+
+  /* ---- Text ---- */
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: #a1a1aa;
+  --color-text-tertiary: #71717a;
+
+  /* ---- Accent (Linear-inspired indigo/violet — the ONE brand color) ---- */
+  --color-accent: #5e6ad2;
+  --color-accent-hover: #6e79e0;
+  --color-accent-subtle: rgb(94 106 210 / 0.14);
+
+  /* ---- Status colors (reserved meaning — see status-model skill) ---- */
+  --color-status-success: #10b981;
+  --color-status-success-subtle: rgb(16 185 129 / 0.14);
+  --color-status-warning: #f59e0b;
+  --color-status-warning-subtle: rgb(245 158 11 / 0.14);
+  --color-status-danger: #ef4444;
+  --color-status-danger-subtle: rgb(239 68 68 / 0.14);
+  --color-status-info: #3b82f6;
+  --color-status-info-subtle: rgb(59 130 246 / 0.14);
+
+  /* ---- Radius ---- */
+  --radius-sm: 12px;   /* chips, badges, small buttons — intentionally
+                           rounder than md, see SKILL.md note */
+  --radius-md: 10px;   /* inputs, list rows */
+  --radius-lg: 16px;   /* cards, panels, modals */
+  --radius-full: 9999px;
+
+  /* ---- Elevation ---- */
+  --shadow-flat: none;
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.3),
+                    0 0 0 1px rgb(255 255 255 / 0.04);
+  --shadow-floating: 0 8px 24px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4),
+                      0 0 0 1px rgb(255 255 255 / 0.06);
+
+  /* ---- Typography ---- */
+  --font-sans: "Inter", -apple-system, "Segoe UI", sans-serif;
+
+  --text-caption: 11px;
+  --text-caption--line-height: 16px;
+  --text-caption--font-weight: 500;
+
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 20px;
+  --text-body-sm--font-weight: 400;
+
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-body--font-weight: 400;
+
+  --text-heading-sm: 16px;
+  --text-heading-sm--line-height: 24px;
+  --text-heading-sm--font-weight: 600;
+
+  --text-heading: 20px;
+  --text-heading--line-height: 28px;
+  --text-heading--font-weight: 600;
+
+  --text-display: 24px;
+  --text-display--line-height: 32px;
+  --text-display--font-weight: 600;
+
+  /* ---- Motion ---- */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+}
+
+/* ---- Light theme override ---- */
+[data-theme="light"] {
+  --color-surface-0: #f8fafc;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f1f5f9;
+  --color-surface-3: #ffffff;
+
+  --color-border-subtle: rgb(15 23 42 / 0.08);
+  --color-border-strong: rgb(15 23 42 / 0.16);
+
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-tertiary: #94a3b8;
+
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-subtle: rgb(79 70 229 / 0.10);
+
+  --color-status-success: #059669;
+  --color-status-warning: #d97706;
+  --color-status-danger: #dc2626;
+  --color-status-info: #2563eb;
+
+  /* Light theme needs real diffuse shadows since surfaces are white */
+  --shadow-raised: 0 1px 3px rgb(15 23 42 / 0.08), 0 4px 12px rgb(15 23 42 / 0.06);
+  --shadow-floating: 0 8px 24px rgb(15 23 42 / 0.12), 0 2px 8px rgb(15 23 42 / 0.06);
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    user-select: none;
+    -webkit-user-select: none;
+    overflow-x: hidden;
+    background: var(--color-surface-0);
+    color: var(--color-text-primary);
+    transition: background-color var(--duration-base) var(--ease-standard),
+                color var(--duration-base) var(--ease-standard);
+  }
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 9999px;
+}
