@@ -15,6 +15,8 @@ pub struct DownloadRecord {
     pub format: String,
     pub date_added: i64,
     pub hidden: bool,
+    #[serde(default)]
+    pub file_size: Option<u64>,
 }
 
 pub fn init_db(app: &AppHandle) -> Result<Connection> {
@@ -120,6 +122,7 @@ pub fn get_all_downloads(conn: &Connection) -> Result<Vec<DownloadRecord>> {
             format: row.get(6)?,
             date_added: row.get(7)?,
             hidden: row.get(8)?,
+            file_size: None,
         })
     })?;
 

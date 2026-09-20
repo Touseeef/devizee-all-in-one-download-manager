@@ -369,6 +369,7 @@ async fn start_download(
     is_audio_only: bool,
     ext: String,
     subfolder: Option<String>,
+    custom_dir: Option<String>,
     speed_limit: Option<String>,
     proxy: Option<String>,
     custom_flags: Option<String>,
@@ -379,7 +380,17 @@ async fn start_download(
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let ffmpeg_path_opt = get_ffmpeg_path(&app);
 
-    let mut download_dir = app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee");
+    let mut download_dir = if let Some(ref dir) = custom_dir {
+        let dir_clean = dir.trim();
+        if !dir_clean.is_empty() {
+            PathBuf::from(dir_clean)
+        } else {
+            app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee")
+        }
+    } else {
+        app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee")
+    };
+
     if let Some(ref sub) = subfolder {
         let sub_clean = sub.trim();
         if !sub_clean.is_empty() {
@@ -407,6 +418,7 @@ async fn start_download(
         format: format_id.clone(),
         date_added: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
         hidden: false,
+        file_size: None,
     };
     if let Some(state) = app.try_state::<AppState>() {
         let conn = state.db_conn.lock().unwrap();
@@ -894,6 +906,88 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
     })
 }
 
+#[tauri::command]
+async fn search_youtube(query: String, app: tauri::AppHandle) -> Result<Vec<PlaylistEntry>, String> {
+    let yt_dlp_path = get_yt_dlp_path(&app)?;
+    let clean_query = query.trim();
+    if clean_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let search_term = format!("ytsearch5:{}", clean_query);
+
+    let mut cmd = Command::new(&yt_dlp_path);
+    cmd.args([
+        "--dump-single-json",
+        "--flat-playlist",
+        "--skip-download",
+        "--no-warnings",
+        "--compat-options", "no-youtube-unavailable-videos",
+        &search_term,
+    ]);
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("YouTube search failed".to_string());
+    }
+
+    let json_val: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse search results: {}", e))?;
+
+    let mut entries = Vec::new();
+    if let Some(arr) = json_val["entries"].as_array() {
+        for entry in arr {
+            let entry_id = entry["id"].as_str().unwrap_or("").to_string();
+            let entry_title = entry["title"].as_str().unwrap_or("Untitled Video").to_string();
+            let final_url = entry["url"]
+                .as_str()
+                .map(|u| {
+                    if u.starts_with("http") {
+                        u.to_string()
+                    } else {
+                        format!("https://www.youtube.com/watch?v={}", u)
+                    }
+                })
+                .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={}", entry_id));
+
+            let thumbnail = entry["thumbnail"]
+                .as_str()
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| {
+                    if !entry_id.is_empty() {
+                        format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", entry_id)
+                    } else {
+                        "".to_string()
+                    }
+                });
+
+            let duration_secs = entry["duration"].as_u64();
+            let duration_string = match duration_secs {
+                Some(secs) => {
+                    let m = secs / 60;
+                    let s = secs % 60;
+                    format!("{}:{:02}", m, s)
+                }
+                None => "--:--".to_string(),
+            };
+
+            if !entry_id.is_empty() {
+                entries.push(PlaylistEntry {
+                    id: entry_id,
+                    title: entry_title,
+                    url: final_url,
+                    thumbnail,
+                    duration_string,
+                });
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
 struct AppState {
     db_conn: std::sync::Mutex<rusqlite::Connection>,
 }
@@ -901,6 +995,26 @@ struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            let mut iter = argv.iter();
+            while let Some(arg) = iter.next() {
+                if arg == "--url" {
+                    if let Some(target) = iter.next() {
+                        let _ = app.emit("open-url", target.to_string());
+                    }
+                } else if arg.starts_with("streamgrab://download?url=") {
+                    let clean = arg.trim_start_matches("streamgrab://download?url=");
+                    let _ = app.emit("open-url", clean.to_string());
+                } else if arg.starts_with("http://") || arg.starts_with("https://") {
+                    let _ = app.emit("open-url", arg.to_string());
+                }
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -914,6 +1028,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_video_info,
             fetch_playlist_info,
+            search_youtube,
             get_audio_stream_url,
             get_video_stream_url,
             start_download,
@@ -932,14 +1047,17 @@ pub fn run() {
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
     let conn = state.db_conn.lock().unwrap();
     
-    // Fetch and check if files are missing
+    // Fetch and check if files are missing, and compute file_size
     let mut records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     for record in &mut records {
         if record.status == DownloadStatus::Completed {
             if let Some(ref path) = record.file_path {
-                if !std::path::Path::new(path).exists() {
+                let p = std::path::Path::new(path);
+                if !p.exists() {
                     record.status = DownloadStatus::Missing;
                     let _ = db::update_download_status(&conn, &record.id, &DownloadStatus::Missing, record.percent, Some(path));
+                } else if let Ok(meta) = std::fs::metadata(p) {
+                    record.file_size = Some(meta.len());
                 }
             }
         }

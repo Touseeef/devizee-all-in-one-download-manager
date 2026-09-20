@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { open } from "@tauri-apps/plugin-dialog";
 import { 
   Download, Music, Settings as SettingsIcon, Search, X, Folder, MoreVertical, 
   Trash2, AlertCircle, PlayCircle, Loader2, Play, Pause, Volume2, Volume1, VolumeX,
@@ -64,6 +65,19 @@ type DownloadRecord = {
   format: string;
   date_added: number;
   hidden: boolean;
+  file_size?: number | null;
+};
+
+const formatFileSize = (bytes?: number | null): string => {
+  if (!bytes || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let val = bytes;
+  let idx = 0;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx++;
+  }
+  return `${val.toFixed(1)} ${units[idx]}`;
 };
 
 // ===================== TIME PARSING & FORMATTING HELPERS =====================
@@ -598,11 +612,27 @@ export default function App() {
 
   // History, Queue Filtering & Sorting
   const [history, setHistory] = useState<DownloadRecord[]>([]);
-  const [queueFilter, setQueueFilter] = useState<"all" | "video" | "audio" | "active" | "completed">("all");
-  const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "title" | "progress">("date_desc");
+  const [activitySearchQuery, setActivitySearchQuery] = useState("");
+  const [queueFilter, setQueueFilter] = useState<"all" | "video" | "audio" | "active" | "completed" | "attention">("all");
+  const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "size_desc" | "size_asc" | "title" | "progress">("date_desc");
   const completedBatch = useRef<string[]>([]);
   const errorBatch = useRef<string[]>([]);
   const notificationTimer = useRef<any>(null);
+
+  // YouTube Keyword Search State
+  const [searchResults, setSearchResults] = useState<PlaylistEntry[] | null>(null);
+  const [isSearchingYoutube, setIsSearchingYoutube] = useState(false);
+
+  // Playlist Bulk-Download State & Batch Progress View
+  const [batchPreset, setBatchPreset] = useState("1080p");
+  const [batchFormatId, setBatchFormatId] = useState("bestvideo[height<=1080]+bestaudio/best[height<=1080]");
+  const [batchExt, setBatchExt] = useState("mp4");
+  const [batchIsAudio, setBatchIsAudio] = useState(false);
+  const [activePlaylistBatch, setActivePlaylistBatch] = useState<{
+    title: string;
+    taskIds: string[];
+    formatLabel: string;
+  } | null>(null);
 
   // User Settings State
   const [settings, setSettings] = useState(() => {
@@ -695,13 +725,15 @@ export default function App() {
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
-  // Volume Controller
+  // Single Consolidated Volume Controller
   const handleVolumeChange = (newVol: number) => {
-    setVolume(newVol);
-    setIsMuted(newVol === 0);
-    localStorage.setItem("devizee_volume", newVol.toString());
-    if (audioRef.current) audioRef.current.volume = newVol;
-    if (videoElementRef.current) videoElementRef.current.volume = newVol;
+    const clamped = Math.max(0, Math.min(1, newVol));
+    setVolume(clamped);
+    setIsMuted(clamped === 0);
+    localStorage.setItem("devizee_volume", clamped.toString());
+    updateSetting("volume", clamped);
+    if (audioRef.current) audioRef.current.volume = clamped;
+    if (videoElementRef.current) videoElementRef.current.volume = clamped;
   };
 
   const toggleMute = () => {
@@ -714,6 +746,123 @@ export default function App() {
       setIsMuted(true);
       if (audioRef.current) audioRef.current.volume = 0;
       if (videoElementRef.current) videoElementRef.current.volume = 0;
+    }
+  };
+
+  // Sync volume to audio/video elements on state change or mount
+  useEffect(() => {
+    const effective = isMuted ? 0 : volume;
+    if (audioRef.current) audioRef.current.volume = effective;
+    if (videoElementRef.current) videoElementRef.current.volume = effective;
+  }, [volume, isMuted, activeVideoPlaying]);
+
+  // Unified Fullscreen Exit & Close Handlers
+  const exitFullscreenAndKeepPlaying = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    setVideoFullscreen(false);
+  };
+
+  const handleCloseVideoPlayer = () => {
+    exitFullscreenAndKeepPlaying();
+    setActiveVideoPlaying(false);
+    setNowPlaying({ type: "none", id: null });
+    if (videoElementRef.current) videoElementRef.current.pause();
+  };
+
+  // Keyboard Shortcuts Handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) {
+        return; // Do not intercept while typing
+      }
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (nowPlaying.type === "video" && videoElementRef.current) {
+          if (videoElementRef.current.paused) videoElementRef.current.play();
+          else videoElementRef.current.pause();
+        } else if (nowPlaying.type === "audio" && audioRef.current) {
+          if (isPlayingAudio) {
+            audioRef.current.pause();
+            setIsPlayingAudio(false);
+          } else {
+            audioRef.current.play().then(() => setIsPlayingAudio(true)).catch(() => {});
+          }
+        }
+      } else if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        if (nowPlaying.type === "video" && videoElementRef.current) {
+          videoElementRef.current.currentTime = Math.max(0, videoElementRef.current.currentTime - 5);
+        } else if (nowPlaying.type === "audio" && audioRef.current) {
+          handleSeekRelative(-5);
+        }
+      } else if (e.code === "ArrowRight") {
+        e.preventDefault();
+        if (nowPlaying.type === "video" && videoElementRef.current) {
+          videoElementRef.current.currentTime = Math.min(
+            videoElementRef.current.duration || 86400,
+            videoElementRef.current.currentTime + 5
+          );
+        } else if (nowPlaying.type === "audio" && audioRef.current) {
+          handleSeekRelative(5);
+        }
+      } else if (e.code === "Escape") {
+        if (document.fullscreenElement) {
+          e.preventDefault();
+          exitFullscreenAndKeepPlaying();
+        }
+      } else if (e.code === "KeyM") {
+        e.preventDefault();
+        toggleMute();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [nowPlaying, isPlayingAudio, volume, isMuted]);
+
+  // Browse Save Folder via plugin-dialog
+  const handleBrowseSaveFolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: settings.saveFolder,
+      });
+      if (selected && typeof selected === "string") {
+        updateSetting("saveFolder", selected);
+      }
+    } catch (err) {
+      console.error("Browse save folder error:", err);
+    }
+  };
+
+  // Web Audio API Synthesized Completion Chime
+  const playCompletionChime = () => {
+    if (!settings.playSound || isMuted || volume === 0) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+        gain.gain.setValueAtTime(0.22 * volume, now + idx * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.12 + 0.35);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + idx * 0.12);
+        osc.stop(now + idx * 0.12 + 0.4);
+      });
+    } catch (e) {
+      console.error("Failed to play chime", e);
     }
   };
 
@@ -817,6 +966,7 @@ export default function App() {
         title: "Devizee",
         body: comps === 1 ? "1 download completed successfully." : `${comps} downloads completed successfully.`,
       });
+      playCompletionChime();
     }
     if (errs > 0) {
       sendNotification({
@@ -837,6 +987,20 @@ export default function App() {
       console.error("Failed to load history", e);
     }
   };
+
+  // Single-Instance Native Messaging Relay Listener
+  useEffect(() => {
+    const unlisten = listen<string>("open-url", (event) => {
+      if (event.payload) {
+        setUrl(event.payload);
+        setActiveTab("downloads");
+        analyzeUrl(event.payload);
+      }
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
 
   useEffect(() => {
     loadHistory();
@@ -1042,12 +1206,43 @@ export default function App() {
     setter(formatSecondsToTime(nextSecs, totalMax >= 3600));
   };
 
-  // URL Analysis Logic - Robust for single videos, YouTube mixes, and playlists
-  const handleAnalyze = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const clean = url.trim();
+  // URL Analysis Logic - Robust for single videos, YouTube mixes, playlists, and keyword search
+  const analyzeUrl = async (rawInput: string) => {
+    const clean = rawInput.trim();
     if (!clean) return;
 
+    // Check if input is a direct URL or a keyword search for YouTube
+    const isUrl = /^https?:\/\//i.test(clean) || 
+                  clean.startsWith("www.") || 
+                  clean.includes("youtube.com/") || 
+                  clean.includes("youtu.be/") || 
+                  clean.includes("soundcloud.com/") || 
+                  clean.includes("vimeo.com/");
+
+    if (!isUrl) {
+      // Direct YouTube Search via ytsearch5:
+      setFetchError("");
+      setVideoInfo(null);
+      setPlaylistInfo(null);
+      setSearchResults(null);
+      setIsSearchingYoutube(true);
+      setIsFetching(true);
+      try {
+        const results = await invoke<PlaylistEntry[]>("search_youtube", { query: clean });
+        setSearchResults(results);
+        if (!results || results.length === 0) {
+          setFetchError(`No YouTube results found for "${clean}".`);
+        }
+      } catch (err: any) {
+        setFetchError(`YouTube search error: ${err.toString()}`);
+      } finally {
+        setIsSearchingYoutube(false);
+        setIsFetching(false);
+      }
+      return;
+    }
+
+    setSearchResults(null);
     setFetchError("");
     setVideoInfo(null);
     setPlaylistInfo(null);
@@ -1143,6 +1338,11 @@ export default function App() {
     }
   };
 
+  const handleAnalyze = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await analyzeUrl(url);
+  };
+
   const handleStartDownload = async (formatId: string, ext: string, isAudio: boolean, specificInfo?: any) => {
     const info = specificInfo || videoInfo;
     if (!info) return;
@@ -1193,6 +1393,7 @@ export default function App() {
         isAudioOnly: isAudio,
         ext: ext,
         subfolder: settings.autoOrganize ? (isAudio ? "Audio" : "Video") : null,
+        customDir: settings.saveFolder ? settings.saveFolder : null,
         speedLimit: speedLimitArg,
         proxy: proxyArg,
         customFlags: settings.customFlags ? settings.customFlags : null,
@@ -1204,18 +1405,27 @@ export default function App() {
     }
   };
 
-  const handleBatchDownload = async (formatId: string, ext: string, isAudio: boolean) => {
+  const handleBatchDownload = async (formatId?: string, ext?: string, isAudio?: boolean) => {
     if (!playlistInfo) return;
     const entries = playlistInfo.entries.filter((e) => selectedPlaylistItems.has(e.id));
     if (entries.length === 0) return;
 
-    setPlaylistInfo(null);
-    setShowPlaylistSection(false);
-    setUrl("");
-    
+    const useFmtId = formatId || batchFormatId;
+    const useExt = ext || batchExt;
+    const useIsAudio = isAudio !== undefined ? isAudio : batchIsAudio;
+
+    const taskIds: string[] = [];
     for (const entry of entries) {
-      await handleStartDownload(formatId, ext, isAudio, entry);
+      const taskId = `${entry.id}-${Date.now()}`;
+      taskIds.push(taskId);
+      await handleStartDownload(useFmtId, useExt, useIsAudio, entry);
     }
+
+    setActivePlaylistBatch({
+      title: playlistInfo.title,
+      taskIds,
+      formatLabel: useIsAudio ? `Audio (${useExt.toUpperCase()})` : `${useExt.toUpperCase()}`,
+    });
   };
 
   const handleRemoveHistory = async (id: string) => {
@@ -1261,19 +1471,32 @@ export default function App() {
     h.status === "completed" && isAudioFormat(h.format)
   );
 
-  // Filtered & Sorted history (Fix for Step 8 & Step 9)
+  // Filtered & Sorted history with Real-Time Search & Attention Filter
   const filteredHistory = history.filter(item => {
+    // 1. Keyword search across title, url, format
+    if (activitySearchQuery.trim()) {
+      const q = activitySearchQuery.toLowerCase().trim();
+      const matchTitle = item.title?.toLowerCase().includes(q);
+      const matchUrl = item.url?.toLowerCase().includes(q);
+      const matchFormat = item.format?.toLowerCase().includes(q);
+      if (!matchTitle && !matchUrl && !matchFormat) return false;
+    }
+
+    // 2. Queue filter category
     if (queueFilter === "all") return true;
     if (queueFilter === "video") return isVideoFormat(item.format);
     if (queueFilter === "audio") return isAudioFormat(item.format);
     if (queueFilter === "active") return item.status === "downloading" || item.status === "muxing" || item.status === "starting" || item.status === "queued";
     if (queueFilter === "completed") return item.status === "completed";
+    if (queueFilter === "attention") return item.status === "error" || item.status === "interrupted" || item.status === "missing";
     return true;
   });
 
   const sortedHistory = [...filteredHistory].sort((a, b) => {
     if (sortBy === "date_desc") return b.date_added - a.date_added;
     if (sortBy === "date_asc") return a.date_added - b.date_added;
+    if (sortBy === "size_desc") return (b.file_size || 0) - (a.file_size || 0);
+    if (sortBy === "size_asc") return (a.file_size || 0) - (b.file_size || 0);
     if (sortBy === "title") return a.title.localeCompare(b.title);
     if (sortBy === "progress") return b.percent - a.percent;
     return 0;
@@ -1304,6 +1527,7 @@ export default function App() {
                     ext: "mp4", 
                     isAudioOnly: false,
                     subfolder: "Video",
+                    customDir: settings.saveFolder ? settings.saveFolder : null,
                     speedLimit: null,
                     proxy: null,
                     customFlags: null,
@@ -1415,7 +1639,7 @@ export default function App() {
         {activeTab === "downloads" && (
           <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
             
-            {/* StatTiles — 4 Purposeful Gradient Highlight Tiles */}
+            {/* StatTiles — 4 Purposeful Gradient Highlight Tiles (Clickable to Filter) */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
               <StatTile 
                 label={t("tile_active")} 
@@ -1423,6 +1647,7 @@ export default function App() {
                 sub={t("tile_active_sub")}
                 gradient="var(--gradient-tile-primary)" 
                 icon={<Download size={17} />} 
+                onClick={() => setQueueFilter("active")}
               />
               <StatTile 
                 label={t("tile_queued")} 
@@ -1430,6 +1655,7 @@ export default function App() {
                 sub={t("tile_queued_sub")}
                 gradient="var(--gradient-tile-blue)" 
                 icon={<Clock size={17} />} 
+                onClick={() => setQueueFilter("active")}
               />
               <StatTile 
                 label={t("tile_attention")} 
@@ -1437,6 +1663,7 @@ export default function App() {
                 sub={t("tile_attention_sub")}
                 gradient="var(--gradient-tile-amber)" 
                 icon={<AlertCircle size={17} />} 
+                onClick={() => setQueueFilter("attention")}
               />
               <StatTile 
                 label={t("tile_completed")} 
@@ -1444,6 +1671,7 @@ export default function App() {
                 sub={t("tile_completed_sub")}
                 gradient="var(--gradient-tile-violet)" 
                 icon={<CheckCircle2 size={17} />} 
+                onClick={() => setQueueFilter("completed")}
               />
             </div>
 
@@ -1464,8 +1692,8 @@ export default function App() {
                 disabled={isFetching || !url.trim()}
                 className="absolute right-1.5 top-1.5 bottom-1.5 bg-accent hover:bg-accent-hover text-white px-4 rounded-md font-semibold text-body-sm transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
               >
-                {isFetching ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} strokeWidth={2.5} />}
-                <span>{isFetching ? t("analyzing") : t("btn_analyze")}</span>
+                {isFetching ? <Loader2 size={15} className="animate-spin" /> : isSearchingYoutube ? <Search size={15} /> : <Download size={15} strokeWidth={2.5} />}
+                <span>{isFetching ? (isSearchingYoutube ? "Searching..." : t("analyzing")) : t("btn_analyze")}</span>
               </button>
             </form>
 
@@ -1474,6 +1702,99 @@ export default function App() {
                 <AlertCircle size={16} className="mt-0.5 shrink-0" />
                 <div className="text-body-sm font-medium">
                   <span className="font-semibold">{t("analysis_failed")}: </span>{fetchError}
+                </div>
+              </div>
+            )}
+
+            {/* YouTube Keyword Search Results Grid */}
+            {searchResults && (
+              <div className="bg-surface-1 rounded-md p-4 shadow-raised space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-fast border border-border-subtle">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Search size={15} className="text-accent" />
+                    <h3 className="text-body-sm font-semibold text-primary">
+                      YouTube Search Results ({searchResults.length})
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSearchResults(null)}
+                    className="text-caption text-secondary hover:text-primary flex items-center gap-1 hover:underline"
+                  >
+                    <X size={13} />
+                    <span>Close Results</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {searchResults.map((res) => (
+                    <div
+                      key={res.id}
+                      className="bg-surface-0 rounded-md p-2.5 border border-border-subtle flex flex-col justify-between hover:border-accent/40 transition-colors group/card shadow-sm"
+                    >
+                      <div>
+                        <div
+                          className="aspect-video w-full rounded-sm overflow-hidden bg-surface-2 relative cursor-pointer group/thumb mb-2"
+                          onClick={() => {
+                            setUrl(res.url);
+                            analyzeUrl(res.url);
+                          }}
+                          title="Click to analyze and download"
+                        >
+                          <img
+                            src={res.thumbnail || `https://i.ytimg.com/vi/${res.id}/hqdefault.jpg`}
+                            alt={res.title}
+                            className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
+                            onError={(e) => {
+                              e.currentTarget.src = `https://i.ytimg.com/vi/${res.id}/hqdefault.jpg`;
+                            }}
+                          />
+                          <div className="absolute inset-0 bg-black/25 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition-opacity">
+                            <div className="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center shadow-md">
+                              <Play size={14} fill="white" className="ml-0.5" />
+                            </div>
+                          </div>
+                          {res.duration_string && (
+                            <span className="absolute bottom-1 right-1 bg-black/80 text-white font-mono text-[10px] px-1 py-0.5 rounded">
+                              {res.duration_string}
+                            </span>
+                          )}
+                        </div>
+                        <h4
+                          className="text-body-sm font-semibold text-primary line-clamp-2 cursor-pointer hover:text-accent"
+                          onClick={() => {
+                            setUrl(res.url);
+                            analyzeUrl(res.url);
+                          }}
+                          title={res.title}
+                        >
+                          {res.title}
+                        </h4>
+                      </div>
+
+                      <div className="mt-2.5 pt-2 border-t border-border-subtle flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUrl(res.url);
+                            analyzeUrl(res.url);
+                          }}
+                          className="flex-1 bg-accent hover:bg-accent-hover text-white py-1 rounded-sm text-caption font-semibold transition-all hover:scale-[1.02] flex items-center justify-center gap-1 shadow-sm"
+                        >
+                          <Download size={12} />
+                          <span>Inspect & Download</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handlePlayVideo(res)}
+                          className="w-7 h-7 rounded-sm bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors border border-border-subtle shrink-0"
+                          title="Play preview in-app"
+                        >
+                          <Play size={12} fill="currentColor" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -1500,13 +1821,33 @@ export default function App() {
                             ref={videoElementRef}
                             src={videoStreamUrl}
                             controls
-                            autoPlay
+                            autoPlay={settings.autoplay}
+                            onPlay={() => {
+                              if (audioRef.current) audioRef.current.pause();
+                              setIsPlayingAudio(false);
+                              setPreviewingId(null);
+                              setNowPlaying({ type: "video", id: videoInfo.id });
+                            }}
+                            onPause={() => {
+                              if (nowPlaying.type === "video") {
+                                setNowPlaying({ type: "none", id: null });
+                              }
+                            }}
+                            onVolumeChange={(e) => {
+                              const v = (e.target as HTMLVideoElement).volume;
+                              const m = (e.target as HTMLVideoElement).muted;
+                              if (m !== isMuted) setIsMuted(m);
+                              if (!m && Math.abs(v - volume) > 0.02) {
+                                setVolume(v);
+                                localStorage.setItem("devizee_volume", v.toString());
+                              }
+                            }}
                             className="w-full h-full object-contain"
                           />
                         ) : (
                           // High compatibility fallback iframe for YouTube
                           <iframe
-                            src={`https://www.youtube-nocookie.com/embed/${videoInfo.id}?autoplay=1&rel=0`}
+                            src={`https://www.youtube-nocookie.com/embed/${videoInfo.id}?autoplay=${settings.autoplay ? "1" : "0"}&rel=0`}
                             title={videoInfo.title}
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
                             allowFullScreen
@@ -1550,15 +1891,9 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               if (videoFullscreen) {
-                                // If in fullscreen mode, close button exits fullscreen without stopping playback
-                                if (document.fullscreenElement) {
-                                  document.exitFullscreen().catch(() => {});
-                                }
+                                exitFullscreenAndKeepPlaying();
                               } else {
-                                // If inline player, close button returns to thumbnail view
-                                setActiveVideoPlaying(false);
-                                setNowPlaying({ type: "none", id: null });
-                                if (videoElementRef.current) videoElementRef.current.pause();
+                                handleCloseVideoPlayer();
                               }
                             }}
                             className="w-7 h-7 rounded-md bg-white/10 hover:bg-status-danger/80 text-white flex items-center justify-center transition-colors"
@@ -2006,15 +2341,6 @@ export default function App() {
                       >
                         {showPlaylistSection ? "Collapse" : "Expand Playlist"}
                       </button>
-                      {selectedPlaylistItems.size > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleBatchDownload("bestvideo+bestaudio/best", "mp4", false)}
-                          className="px-3.5 py-1 rounded-md bg-accent hover:bg-accent-hover text-white text-caption font-semibold transition-all hover:scale-[1.02] shadow-sm"
-                        >
-                          {t("download_selected")} ({selectedPlaylistItems.size})
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -2022,8 +2348,8 @@ export default function App() {
                 {playlistInfo && showPlaylistSection && (
                   <div className="p-3.5 space-y-3 bg-surface-0/40">
                     
-                    {/* Step 10: Clear Spacing between Select All and Deselect All buttons (gap-3) */}
-                    <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+                    {/* Toolbar with Select All / Deselect All + Batch Format Selector + Download Batch */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 px-1 pb-1 border-b border-border-subtle/50">
                       <div className="flex items-center gap-3 text-caption font-semibold">
                         <button 
                           type="button"
@@ -2044,27 +2370,55 @@ export default function App() {
                       </div>
 
                       <div className="flex items-center gap-2">
+                        <select
+                          value={batchPreset}
+                          onChange={(e) => {
+                            const p = e.target.value;
+                            setBatchPreset(p);
+                            if (p === "1080p") {
+                              setBatchFormatId("bestvideo[height<=1080]+bestaudio/best[height<=1080]");
+                              setBatchExt("mp4");
+                              setBatchIsAudio(false);
+                            } else if (p === "720p") {
+                              setBatchFormatId("bestvideo[height<=720]+bestaudio/best[height<=720]");
+                              setBatchExt("mp4");
+                              setBatchIsAudio(false);
+                            } else if (p === "480p") {
+                              setBatchFormatId("bestvideo[height<=480]+bestaudio/best[height<=480]");
+                              setBatchExt("mp4");
+                              setBatchIsAudio(false);
+                            } else if (p === "mp3") {
+                              setBatchFormatId("bestaudio/best");
+                              setBatchExt("mp3");
+                              setBatchIsAudio(true);
+                            } else if (p === "m4a") {
+                              setBatchFormatId("bestaudio/best");
+                              setBatchExt("m4a");
+                              setBatchIsAudio(true);
+                            }
+                          }}
+                          className="bg-surface-1 border border-border-subtle text-primary rounded-md px-2.5 py-1 text-caption font-semibold outline-none cursor-pointer"
+                        >
+                          <option value="1080p">1080p Video (MP4)</option>
+                          <option value="720p">720p Video (MP4)</option>
+                          <option value="480p">480p Video (MP4)</option>
+                          <option value="mp3">Audio (MP3 320k)</option>
+                          <option value="m4a">Audio (M4A)</option>
+                        </select>
                         <button
                           type="button"
                           disabled={selectedPlaylistItems.size === 0}
-                          onClick={() => handleBatchDownload("bestaudio/best", "mp3", true)}
-                          className="px-3 py-1 rounded-md bg-surface-2 text-primary hover:bg-surface-1 text-caption font-semibold disabled:opacity-40 transition-colors border border-border-subtle"
+                          onClick={() => handleBatchDownload()}
+                          className="px-3.5 py-1 rounded-md bg-accent text-white hover:bg-accent-hover text-caption font-semibold disabled:opacity-40 transition-all shadow-sm flex items-center gap-1.5"
                         >
-                          {t("batch_audio")}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={selectedPlaylistItems.size === 0}
-                          onClick={() => handleBatchDownload("bestvideo+bestaudio/best", "mp4", false)}
-                          className="px-3 py-1 rounded-md bg-accent text-white hover:bg-accent-hover text-caption font-semibold disabled:opacity-40 transition-colors shadow-sm"
-                        >
-                          {t("batch_video")}
+                          <Download size={13} />
+                          <span>{t("download_selected")} ({selectedPlaylistItems.size})</span>
                         </button>
                       </div>
                     </div>
 
-                    {/* Scrollable Checklist */}
-                    <div className="max-h-80 overflow-y-auto space-y-1.5 pr-1.5">
+                    {/* Scrollable Checklist with Generous Spacing */}
+                    <div className="max-h-80 overflow-y-auto space-y-2.5 pr-1.5">
                       {playlistInfo.entries.map((entry, idx) => {
                         const isSelected = selectedPlaylistItems.has(entry.id);
                         const isThisPreviewing = previewingId === entry.id;
@@ -2072,7 +2426,7 @@ export default function App() {
                         return (
                           <div 
                             key={entry.id} 
-                            className={`flex flex-col p-2 rounded-md transition-all bg-surface-1 shadow-sm ${isSelected ? "ring-1 ring-accent" : ""}`}
+                            className={`flex flex-col p-2.5 rounded-md transition-all bg-surface-1 shadow-sm border border-border-subtle ${isSelected ? "ring-1 ring-accent border-accent/60" : ""}`}
                           >
                             <div className="flex items-center gap-2.5">
                               <input 
@@ -2184,18 +2538,90 @@ export default function App() {
               </div>
             )}
 
-            {/* Downloads Activity List with Categorization Tabs & Sorting (Step 8 & 9) */}
+            {/* BatchProgressView for Playlist Bulk Downloads */}
+            {activePlaylistBatch && (
+              <div className="bg-surface-1 rounded-md p-4 shadow-raised border border-accent/40 space-y-2.5 animate-in fade-in slide-in-from-bottom-2 duration-fast">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={15} className="animate-spin text-accent" />
+                    <div>
+                      <h4 className="font-semibold text-body-sm text-primary">
+                        Batch Downloading: {activePlaylistBatch.title}
+                      </h4>
+                      <p className="text-caption text-secondary">
+                        Format: <span className="font-mono font-semibold text-accent">{activePlaylistBatch.formatLabel}</span> • {activePlaylistBatch.taskIds.length} items in batch
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActivePlaylistBatch(null)}
+                    className="px-2.5 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-secondary hover:text-primary text-caption font-semibold transition-colors border border-border-subtle"
+                  >
+                    Clear Batch View
+                  </button>
+                </div>
+
+                {(() => {
+                  const batchItems = history.filter(h => activePlaylistBatch.taskIds.includes(h.id));
+                  const finished = batchItems.filter(h => h.status === "completed").length;
+                  const total = activePlaylistBatch.taskIds.length;
+                  const avgPercent = batchItems.length > 0
+                    ? Math.round(batchItems.reduce((acc, h) => acc + h.percent, 0) / total)
+                    : 0;
+                  return (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between text-caption text-secondary">
+                        <span>{finished} of {total} completed</span>
+                        <span className="font-mono font-semibold text-primary">{avgPercent}%</span>
+                      </div>
+                      <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full transition-all duration-300 ${finished === total ? "bg-status-success" : "bg-accent"}`}
+                          style={{ width: `${avgPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Downloads Activity List with Categorization Tabs, Real-Time Search & Sorting */}
             <div className="space-y-3 pt-1">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-body-sm font-semibold text-primary">{t("activity_title")}</h3>
-                  <span className="text-caption text-secondary">({sortedHistory.length})</span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-body-sm font-semibold text-primary">{t("activity_title")}</h3>
+                    <span className="text-caption text-secondary">({sortedHistory.length})</span>
+                  </div>
+
+                  {/* Real-Time Downloads Search Input */}
+                  <div className="relative">
+                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-tertiary pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Search downloads..."
+                      value={activitySearchQuery}
+                      onChange={(e) => setActivitySearchQuery(e.target.value)}
+                      className="bg-surface-1 border border-border-subtle rounded-md pl-7 pr-6 py-1 text-caption text-primary placeholder:text-tertiary outline-none focus:border-accent w-40 sm:w-52 transition-all"
+                    />
+                    {activitySearchQuery && (
+                      <button 
+                        onClick={() => setActivitySearchQuery("")}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-tertiary hover:text-primary"
+                        title="Clear search"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Categorization Chips */}
                   <div className="flex items-center bg-surface-1 p-1 rounded-md gap-1 shadow-sm border border-border-subtle overflow-x-auto">
-                    {(["all", "video", "audio", "active", "completed"] as const).map((cat) => (
+                    {(["all", "video", "audio", "active", "completed", "attention"] as const).map((cat) => (
                       <button
                         key={cat}
                         onClick={() => setQueueFilter(cat)}
@@ -2208,12 +2634,13 @@ export default function App() {
                         {cat === "all" ? t("filter_all") :
                          cat === "video" ? t("filter_video") :
                          cat === "audio" ? t("filter_audio") :
-                         cat === "active" ? t("filter_active") : t("filter_finished")}
+                         cat === "active" ? t("filter_active") :
+                         cat === "completed" ? t("filter_finished") : "Attention"}
                       </button>
                     ))}
                   </div>
 
-                  {/* Step 8: Sorting dropdown */}
+                  {/* Sorting dropdown including file size */}
                   <div className="flex items-center bg-surface-1 rounded-md px-2 py-1 border border-border-subtle shadow-sm gap-1.5">
                     <ArrowUpDown size={12} className="text-secondary" />
                     <select
@@ -2223,6 +2650,8 @@ export default function App() {
                     >
                       <option value="date_desc">Newest First</option>
                       <option value="date_asc">Oldest First</option>
+                      <option value="size_desc">Size (Largest)</option>
+                      <option value="size_asc">Size (Smallest)</option>
                       <option value="title">Title (A-Z)</option>
                       <option value="progress">Progress</option>
                     </select>
@@ -2489,9 +2918,21 @@ export default function App() {
                     type="text" 
                     readOnly 
                     value={settings.saveFolder} 
-                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44"
+                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate"
+                    title={settings.saveFolder}
                   />
-                  <button onClick={() => openFolder(null)} className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle">
+                  <button 
+                    type="button"
+                    onClick={handleBrowseSaveFolder} 
+                    className="px-3 py-1 rounded-md bg-accent text-white hover:bg-accent-hover text-caption font-semibold transition-colors shadow-sm"
+                  >
+                    Browse...
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => openFolder(null)} 
+                    className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle"
+                  >
                     Open
                   </button>
                 </div>
@@ -2754,10 +3195,27 @@ function TopNavButton({ active, onClick, icon, label, badge }: { active: boolean
   );
 }
 
-function StatTile({ label, count, sub, gradient, icon }: { label: string; count: number; sub: string; gradient: string; icon: React.ReactNode }) {
+function StatTile({ 
+  label, 
+  count, 
+  sub, 
+  gradient, 
+  icon,
+  onClick,
+}: { 
+  label: string; 
+  count: number; 
+  sub: string; 
+  gradient: string; 
+  icon: React.ReactNode;
+  onClick?: () => void;
+}) {
   return (
     <div 
-      className="rounded-md p-3.5 text-white shadow-floating relative overflow-hidden flex flex-col justify-between min-h-20 transition-all hover:scale-[1.01]"
+      onClick={onClick}
+      className={`rounded-md p-3.5 text-white shadow-floating relative overflow-hidden flex flex-col justify-between min-h-20 transition-all ${
+        onClick ? "cursor-pointer hover:scale-[1.02] active:scale-[0.99]" : ""
+      }`}
       style={{ background: gradient }}
     >
       <div className="flex items-center justify-between opacity-90">
@@ -2772,7 +3230,7 @@ function StatTile({ label, count, sub, gradient, icon }: { label: string; count:
   );
 }
 
-// History Item with Double-Click, Dedicated Icon Buttons, and Live Speed/ETA (Steps 7 & 8)
+// History Item with Double-Click, Dedicated Icon Buttons, File Size, and Live Speed/ETA
 function HistoryItem({ 
   record, 
   onOpenFolder, 
@@ -2804,7 +3262,7 @@ function HistoryItem({
           onOpenFile();
         }
       }}
-      className="bg-surface-1 rounded-md p-3 flex gap-3 transition-all shadow-raised relative group cursor-pointer"
+      className="bg-surface-1 rounded-md p-3 flex gap-3 transition-all shadow-raised relative group cursor-pointer hover:border-border-subtle"
       title={record.status === "completed" ? "Double-click to open file" : undefined}
     >
       <div className="w-16 aspect-video bg-surface-0 rounded-sm flex items-center justify-center text-tertiary shrink-0">
@@ -2819,9 +3277,14 @@ function HistoryItem({
             </h4>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-caption text-secondary text-[10px] uppercase font-mono">{record.format}</span>
-              {/* Step 8: Surface live speed and ETA */}
+              {record.file_size && record.file_size > 0 && (
+                <span className="text-caption text-secondary font-mono text-[10px] bg-surface-2 px-1.5 py-0.2 rounded">
+                  {formatFileSize(record.file_size)}
+                </span>
+              )}
+              {/* Step 8: Surface live speed and ETA with high contrast font-medium */}
               {record.status === "downloading" && record.speed && record.speed !== "0 B/s" && (
-                <span className="text-caption font-mono text-accent text-[11px]">
+                <span className="text-caption font-mono font-medium text-secondary text-[11px]">
                   {record.speed} {record.eta ? `• ETA: ${record.eta}` : ""}
                 </span>
               )}

@@ -1,0 +1,10 @@
+{
+  "name": "com.devizee.native_host",
+  "description": "Devizee Download Manager Native Messaging Host",
+  "path": "devizee_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://*",
+    "chrome-extension://devizee-aio-download-manager-extension/"
+  ]
+}
