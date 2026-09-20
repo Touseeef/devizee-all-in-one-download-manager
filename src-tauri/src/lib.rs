@@ -33,6 +33,8 @@ pub struct VideoInfo {
     pub duration: Option<u64>,
     pub duration_string: String,
     pub uploader: String,
+    pub video_formats: Vec<FormatOption>,
+    pub audio_formats: Vec<FormatOption>,
     pub formats: Vec<FormatOption>,
 }
 
@@ -227,10 +229,29 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
         None => "--:--".to_string(),
     };
 
-    let mut formats: Vec<FormatOption> = Vec::new();
+    let mut video_formats: Vec<FormatOption> = Vec::new();
+    let mut audio_formats: Vec<FormatOption> = Vec::new();
 
-    // -- RECOMMENDED (Top 3) --
-    formats.push(FormatOption {
+    // -- VIDEO FORMATS (Primary + Dropdown) --
+    video_formats.push(FormatOption {
+        format_id: "bestvideo[height<=1080]+bestaudio/best[height<=1080]".to_string(),
+        label: "1080p (Full HD)".to_string(),
+        ext: "mp4".to_string(),
+        is_audio_only: false,
+        resolution: Some("1080p".to_string()),
+        filesize_approx: None,
+    });
+
+    video_formats.push(FormatOption {
+        format_id: "bestvideo[height<=720]+bestaudio/best[height<=720]".to_string(),
+        label: "720p (HD)".to_string(),
+        ext: "mp4".to_string(),
+        is_audio_only: false,
+        resolution: Some("720p".to_string()),
+        filesize_approx: None,
+    });
+
+    video_formats.push(FormatOption {
         format_id: "bestvideo+bestaudio/best".to_string(),
         label: "Best Quality (Auto-Mux)".to_string(),
         ext: "mp4".to_string(),
@@ -239,60 +260,90 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
         filesize_approx: None,
     });
 
-    formats.push(FormatOption {
-        format_id: "bestvideo[height<=1080]+bestaudio/best[height<=1080]".to_string(),
-        label: "Full HD (1080p)".to_string(),
-        ext: "mp4".to_string(),
-        is_audio_only: false,
-        resolution: Some("1080p".to_string()),
-        filesize_approx: None,
-    });
-
-    formats.push(FormatOption {
-        format_id: "bestaudio/best".to_string(),
-        label: "Audio Only (MP3 320k)".to_string(),
-        ext: "mp3".to_string(),
-        is_audio_only: true,
-        resolution: None,
-        filesize_approx: None,
-    });
-
-    // -- MORE QUALITIES --
-    formats.push(FormatOption {
-        format_id: "bestvideo[height<=720]+bestaudio/best[height<=720]".to_string(),
-        label: "HD (720p)".to_string(),
-        ext: "mp4".to_string(),
-        is_audio_only: false,
-        resolution: Some("720p".to_string()),
-        filesize_approx: None,
-    });
-
-    formats.push(FormatOption {
+    video_formats.push(FormatOption {
         format_id: "bestvideo[height<=2160]+bestaudio/best[height<=2160]".to_string(),
-        label: "4K (2160p)".to_string(),
+        label: "4K (2160p Ultra HD)".to_string(),
         ext: "mp4".to_string(),
         is_audio_only: false,
         resolution: Some("2160p".to_string()),
         filesize_approx: None,
     });
 
-    formats.push(FormatOption {
+    video_formats.push(FormatOption {
         format_id: "bestvideo[height<=1440]+bestaudio/best[height<=1440]".to_string(),
-        label: "2K (1440p)".to_string(),
+        label: "2K (1440p QHD)".to_string(),
         ext: "mp4".to_string(),
         is_audio_only: false,
         resolution: Some("1440p".to_string()),
         filesize_approx: None,
     });
 
-    formats.push(FormatOption {
+    video_formats.push(FormatOption {
+        format_id: "bestvideo[height<=480]+bestaudio/best[height<=480]".to_string(),
+        label: "480p (Standard)".to_string(),
+        ext: "mp4".to_string(),
+        is_audio_only: false,
+        resolution: Some("480p".to_string()),
+        filesize_approx: None,
+    });
+
+    video_formats.push(FormatOption {
+        format_id: "bestvideo[height<=360]+bestaudio/best[height<=360]".to_string(),
+        label: "360p (Data Saver)".to_string(),
+        ext: "mp4".to_string(),
+        is_audio_only: false,
+        resolution: Some("360p".to_string()),
+        filesize_approx: None,
+    });
+
+    // -- AUDIO FORMATS (Primary + Dropdown) --
+    audio_formats.push(FormatOption {
         format_id: "bestaudio/best".to_string(),
-        label: "Lossless Audio (FLAC/Opus)".to_string(),
+        label: "MP3 (320 kbps)".to_string(),
+        ext: "mp3".to_string(),
+        is_audio_only: true,
+        resolution: None,
+        filesize_approx: None,
+    });
+
+    audio_formats.push(FormatOption {
+        format_id: "bestaudio/best".to_string(),
+        label: "M4A (256 kbps AAC)".to_string(),
+        ext: "m4a".to_string(),
+        is_audio_only: true,
+        resolution: None,
+        filesize_approx: None,
+    });
+
+    audio_formats.push(FormatOption {
+        format_id: "bestaudio/best".to_string(),
+        label: "FLAC (Lossless)".to_string(),
         ext: "flac".to_string(),
         is_audio_only: true,
         resolution: None,
         filesize_approx: None,
     });
+
+    audio_formats.push(FormatOption {
+        format_id: "bestaudio/best".to_string(),
+        label: "WAV (Uncompressed)".to_string(),
+        ext: "wav".to_string(),
+        is_audio_only: true,
+        resolution: None,
+        filesize_approx: None,
+    });
+
+    audio_formats.push(FormatOption {
+        format_id: "bestaudio/best".to_string(),
+        label: "Opus (160 kbps)".to_string(),
+        ext: "opus".to_string(),
+        is_audio_only: true,
+        resolution: None,
+        filesize_approx: None,
+    });
+
+    let mut formats = video_formats.clone();
+    formats.extend(audio_formats.clone());
 
     Ok(VideoInfo {
         id,
@@ -302,6 +353,8 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
         duration,
         duration_string,
         uploader,
+        video_formats,
+        audio_formats,
         formats,
     })
 }
@@ -315,12 +368,24 @@ async fn start_download(
     format_id: String,
     is_audio_only: bool,
     ext: String,
+    subfolder: Option<String>,
+    speed_limit: Option<String>,
+    proxy: Option<String>,
+    custom_flags: Option<String>,
+    scan_antivirus: Option<bool>,
+    download_sections: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let ffmpeg_path_opt = get_ffmpeg_path(&app);
 
-    let download_dir = app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee");
+    let mut download_dir = app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee");
+    if let Some(ref sub) = subfolder {
+        let sub_clean = sub.trim();
+        if !sub_clean.is_empty() {
+            download_dir = download_dir.join(sub_clean);
+        }
+    }
     if !download_dir.exists() {
         let _ = std::fs::create_dir_all(&download_dir);
     }
@@ -364,14 +429,44 @@ async fn start_download(
         ]);
 
         if is_audio_only {
-            cmd.args(["-x", "--audio-format", &ext, "--audio-quality", "0"]);
+            cmd.args(["-x", "--audio-format", &ext, "--audio-quality", "0", "--embed-metadata", "--embed-thumbnail"]);
         } else {
             cmd.args(["-f", &format_id, "--merge-output-format", &ext]);
+        }
+
+        if let Some(ref sec) = download_sections {
+            let sec_str = sec.trim();
+            if !sec_str.is_empty() {
+                cmd.args(["--download-sections", sec_str, "--force-keyframes-at-cuts"]);
+            }
         }
 
         if let Some(ref ffmpeg_path) = ffmpeg_path_opt {
             cmd.arg("--ffmpeg-location");
             cmd.arg(ffmpeg_path);
+        }
+
+        if let Some(ref limit) = speed_limit {
+            let limit_str = limit.trim();
+            if !limit_str.is_empty() && limit_str.to_lowercase() != "unlimited" {
+                cmd.args(["--limit-rate", limit_str]);
+            }
+        }
+
+        if let Some(ref prx) = proxy {
+            let prx_str = prx.trim();
+            if !prx_str.is_empty() {
+                cmd.args(["--proxy", prx_str]);
+            }
+        }
+
+        if let Some(ref flags) = custom_flags {
+            let flags_str = flags.trim();
+            if !flags_str.is_empty() {
+                for arg in flags_str.split_whitespace() {
+                    cmd.arg(arg);
+                }
+            }
         }
 
         cmd.arg(&url);
@@ -497,6 +592,20 @@ fn assign_child_to_job(child: &std::process::Child) {
         let status = child.wait().unwrap();
         
         if status.success() {
+            // Antivirus scanning if requested
+            #[cfg(target_os = "windows")]
+            if scan_antivirus.unwrap_or(false) {
+                if let Some(ref fp) = final_file_path {
+                    let mpcmdrun = r"C:\Program Files\Windows Defender\MpCmdRun.exe";
+                    if std::path::Path::new(mpcmdrun).exists() {
+                        let mut av_cmd = Command::new(mpcmdrun);
+                        av_cmd.args(["-Scan", "-ScanType", "3", "-File", fp]);
+                        av_cmd.creation_flags(0x08000000);
+                        let _ = av_cmd.status();
+                    }
+                }
+            }
+
             let _ = app_clone.emit("download-progress", DownloadProgressPayload {
                 task_id: task_id_clone.clone(), percent: 100.0, speed: "Done".to_string(), eta: "".to_string(),
                 status: DownloadStatus::Completed, error_code: None, error: None, file_path: final_file_path.clone(),
@@ -522,13 +631,101 @@ fn assign_child_to_job(child: &std::process::Child) {
 }
 
 #[tauri::command]
-async fn open_folder(path: String) -> Result<(), String> {
+async fn open_folder(path: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    let default_dir = app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee");
+    if !default_dir.exists() {
+        let _ = std::fs::create_dir_all(&default_dir);
+    }
+
+    let target_path = match path {
+        Some(p) if !p.trim().is_empty() => {
+            let pb = PathBuf::from(&p);
+            if pb.exists() {
+                pb
+            } else {
+                default_dir
+            }
+        }
+        _ => default_dir,
+    };
+
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new("explorer");
+        if target_path.is_file() {
+            cmd.arg(format!("/select,{}", target_path.to_string_lossy()));
+        } else {
+            cmd.arg(target_path.to_string_lossy().to_string());
+        }
+        cmd.spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let target = if target_path.is_file() {
+            target_path.parent().unwrap_or(&target_path)
+        } else {
+            &target_path
+        };
+        Command::new("xdg-open").arg(target).spawn().map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", &path]);
+        cmd.creation_flags(0x08000000);
+        cmd.spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_autostart(enable: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+
+        if enable {
+            let output = Command::new("reg")
+                .args([
+                    "add",
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    "/v",
+                    "Devizee",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &format!("\"{}\"", exe_str),
+                    "/f",
+                ])
+                .creation_flags(0x08000000)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+        } else {
+            let _ = Command::new("reg")
+                .args([
+                    "delete",
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    "/v",
+                    "Devizee",
+                    "/f",
+                ])
+                .creation_flags(0x08000000)
+                .output();
+        }
     }
     Ok(())
 }
@@ -576,6 +773,31 @@ async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
 }
 
 #[tauri::command]
+async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<String, String> {
+    let yt_dlp_path = get_yt_dlp_path(&app)?;
+    let mut cmd = Command::new(&yt_dlp_path);
+    cmd.args([
+        "-f", "best[ext=mp4]/best",
+        "-g",
+        "--no-warnings",
+        "--extractor-args",
+        "youtube:skip=dash,translated_subs,comments",
+        &url,
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if output.status.success() {
+        let stream_url = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
+        if !stream_url.is_empty() {
+            return Ok(stream_url);
+        }
+    }
+    Err("Could not retrieve video stream URL".to_string())
+}
+
+#[tauri::command]
 async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<PlaylistInfo, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
 
@@ -583,6 +805,9 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
     cmd.args([
         "--dump-single-json",
         "--flat-playlist",
+        "--yes-playlist",
+        "--playlist-end",
+        "100",
         "--no-warnings",
         "--compat-options",
         "no-youtube-unavailable-videos",
@@ -690,11 +915,14 @@ pub fn run() {
             fetch_video_info,
             fetch_playlist_info,
             get_audio_stream_url,
+            get_video_stream_url,
             start_download,
             open_folder,
+            open_file,
             get_history,
             hide_history_item,
-            delete_history_file
+            delete_history_file,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

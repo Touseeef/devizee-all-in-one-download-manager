@@ -1,55 +1,93 @@
 @import "tailwindcss";
 
+:root {
+  --surface-0: #f5f8f7;
+  --surface-1: #ffffff;
+  --surface-2: #edf3f1;
+  --surface-3: #ffffff;
+
+  --border-subtle: rgb(15 23 42 / 0.08);
+  --border-strong: rgb(15 23 42 / 0.16);
+
+  --text-primary: #0f1e1b;
+  --text-secondary: #4b6360;
+  --text-tertiary: #8ba39f;
+
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --accent-subtle: rgb(13 148 136 / 0.12);
+
+  --shadow-raised: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 20px rgb(15 23 42 / 0.06);
+  --shadow-floating: 0 4px 12px rgb(15 23 42 / 0.08), 0 16px 32px rgb(15 23 42 / 0.10);
+}
+
+.dark {
+  --surface-0: #0a0f18;
+  --surface-1: #131b26;
+  --surface-2: #1e293b;
+  --surface-3: #2a374a;
+
+  --border-subtle: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.16);
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  --accent: #14b8a6;
+  --accent-hover: #2dd4bf;
+  --accent-subtle: rgb(20 184 166 / 0.18);
+
+  --shadow-raised: 0 1px 3px rgb(0 0 0 / 0.35), 0 8px 24px rgb(0 0 0 / 0.45);
+  --shadow-floating: 0 4px 16px rgb(0 0 0 / 0.45), 0 20px 40px rgb(0 0 0 / 0.65);
+}
+
 @theme {
-  /* ---- Surfaces (light-first, matching all three references) ---- */
-  --color-surface-0: #f5f8f7;   /* app background — soft off-white, faint mint tint */
-  --color-surface-1: #ffffff;   /* cards, panels, input fields */
-  --color-surface-2: #edf3f1;   /* hover state, nested/inset areas */
-  --color-surface-3: #ffffff;   /* modals, popovers — separated by shadow, not color */
+  /* Surfaces mapped to dynamic theme CSS properties */
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
 
-  /* ---- Borders — used sparingly, see component rules below ---- */
-  --color-border-subtle: rgb(15 23 42 / 0.06);
-  --color-border-strong: rgb(15 23 42 / 0.14);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
 
-  /* ---- Text ---- */
-  --color-text-primary: #0f1e1b;
-  --color-text-secondary: #4b6360;
-  --color-text-tertiary: #8ba39f;
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
 
-  /* ---- Accent (mint/teal — the ONE brand color for ordinary UI) ---- */
-  --color-accent: #0d9488;
-  --color-accent-hover: #0f766e;
-  --color-accent-subtle: rgb(13 148 136 / 0.12);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
 
-  /* ---- Status colors (reserved meaning, unchanged from before) ---- */
+  /* Status colors */
   --color-status-success: #10b981;
-  --color-status-success-subtle: rgb(16 185 129 / 0.12);
+  --color-status-success-subtle: rgb(16 185 129 / 0.15);
   --color-status-warning: #f59e0b;
-  --color-status-warning-subtle: rgb(245 158 11 / 0.12);
+  --color-status-warning-subtle: rgb(245 158 11 / 0.15);
   --color-status-danger: #ef4444;
-  --color-status-danger-subtle: rgb(239 68 68 / 0.12);
+  --color-status-danger-subtle: rgb(239 68 68 / 0.15);
   --color-status-info: #3b82f6;
-  --color-status-info-subtle: rgb(59 130 246 / 0.12);
+  --color-status-info-subtle: rgb(59 130 246 / 0.15);
 
-  /* ---- Hero/stat-tile gradients — ONLY for StatTiles, nowhere else ---- */
+  /* Hero/stat-tile gradients */
   --gradient-tile-primary: linear-gradient(135deg, #34d399, #0d9488);
   --gradient-tile-amber:   linear-gradient(135deg, #fbbf24, #f59e0b);
   --gradient-tile-violet:  linear-gradient(135deg, #a78bfa, #7c3aed);
   --gradient-tile-blue:    linear-gradient(135deg, #60a5fa, #2563eb);
 
-  /* ---- Radius — softer than before, still generous ---- */
-  --radius-sm: 10px;   /* chips, small buttons, inputs */
-  --radius-md: 14px;   /* list rows, secondary cards */
-  --radius-lg: 20px;   /* standard cards, panels */
-  --radius-xl: 24px;   /* hero/stat tiles specifically, matching reference 2 */
+  /* Radius — sleek, modern, less round */
+  --radius-sm: 6px;    /* chips, small controls, inputs */
+  --radius-md: 8px;    /* buttons, list items, badges */
+  --radius-lg: 12px;   /* cards, preview panels */
+  --radius-xl: 14px;   /* hero tiles */
   --radius-full: 9999px;
 
-  /* ---- Elevation — shadow-only separation, no stacked borders ---- */
+  /* Elevation */
   --shadow-flat: none;
-  --shadow-raised: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 20px rgb(15 23 42 / 0.06);
-  --shadow-floating: 0 4px 12px rgb(15 23 42 / 0.08), 0 16px 32px rgb(15 23 42 / 0.10);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-floating: var(--shadow-floating);
 
-  /* ---- Typography — keep Inter, self-hosted / system fallbacks, NOT remote-fetched ---- */
   --font-sans: "Inter", -apple-system, "Segoe UI", sans-serif;
 
   --text-caption: 11px;
@@ -76,7 +114,7 @@
   --text-display--line-height: 34px;
   --text-display--font-weight: 600;
 
-  /* ---- Motion ---- */
+  /* Motion */
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --duration-fast: 120ms;
   --duration-base: 200ms;
@@ -95,19 +133,17 @@
                 color var(--duration-base) var(--ease-standard);
   }
 
-  /* Deliberate focus treatment — replaces any default browser outline.
-     This directly addresses the "big outline" complaint. */
-  button, a, input, [tabindex] {
+  button, a, input, select, [tabindex] {
     outline: none;
   }
-  button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
     border-radius: inherit;
   }
 }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
