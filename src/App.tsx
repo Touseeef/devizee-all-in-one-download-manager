@@ -14,7 +14,8 @@ import {
   Film, Maximize2, Minimize2, RotateCcw, RotateCw, Scissors,
   ArrowUpDown
 } from "lucide-react";
-import { TaskStatus, STATUS_DISPLAY } from "./status";
+import { TaskStatus, ErrorCode, STATUS_DISPLAY, ERROR_MESSAGES } from "./status";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 type FormatOption = {
   format_id: string;
@@ -66,6 +67,8 @@ type DownloadRecord = {
   date_added: number;
   hidden: boolean;
   file_size?: number | null;
+  error_code?: ErrorCode;
+  error_message?: string;
 };
 
 const formatFileSize = (bytes?: number | null): string => {
@@ -578,8 +581,27 @@ export default function App() {
   const [videoFullscreen, setVideoFullscreen] = useState(false);
   const videoContainerRef = useRef<HTMLDivElement | null>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const mainScrollRef = useRef<HTMLElement | null>(null);
   const videoStreamCache = useRef<Map<string, string>>(new Map());
+
+  // YouTube IFrame API PostMessage Command Dispatcher
+  const sendIframeCommand = (func: string, args: any[] = []) => {
+    try {
+      if (iframeRef.current && iframeRef.current.contentWindow) {
+        iframeRef.current.contentWindow.postMessage(
+          JSON.stringify({
+            event: "command",
+            func: func,
+            args: args,
+          }),
+          "*"
+        );
+      }
+    } catch (e) {
+      console.warn("sendIframeCommand failed:", e);
+    }
+  };
 
   // In-Line Audio Preview & Scrubbing State
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -604,6 +626,9 @@ export default function App() {
 
   // Card Download Live Status Tracker (Prevents Card Disappearing)
   const [activeCardTaskId, setActiveCardTaskId] = useState<string | null>(null);
+
+  // Priority 3: Explicit Quality Selection State
+  const [selectedFormat, setSelectedFormat] = useState<FormatOption | null>(null);
 
   // Audio Hub state
   const [audioHubUrl, setAudioHubUrl] = useState("");
@@ -650,6 +675,10 @@ export default function App() {
       autoplay: false,
       // Downloads
       saveFolder: "Downloads/Devizee",
+      videoFolder: "",
+      audioFolder: "",
+      generalFolder: "",
+      tempFolder: "",
       autoOrganize: true,
       filenameTemplate: "%(title)s [%(id)s].%(ext)s",
       duplicateAction: "rename",
@@ -734,6 +763,12 @@ export default function App() {
     updateSetting("volume", clamped);
     if (audioRef.current) audioRef.current.volume = clamped;
     if (videoElementRef.current) videoElementRef.current.volume = clamped;
+    sendIframeCommand("setVolume", [Math.round(clamped * 100)]);
+    if (clamped === 0) {
+      sendIframeCommand("mute");
+    } else {
+      sendIframeCommand("unMute");
+    }
   };
 
   const toggleMute = () => {
@@ -742,18 +777,27 @@ export default function App() {
       const restore = volume > 0 ? volume : 0.8;
       if (audioRef.current) audioRef.current.volume = restore;
       if (videoElementRef.current) videoElementRef.current.volume = restore;
+      sendIframeCommand("unMute");
+      sendIframeCommand("setVolume", [Math.round(restore * 100)]);
     } else {
       setIsMuted(true);
       if (audioRef.current) audioRef.current.volume = 0;
       if (videoElementRef.current) videoElementRef.current.volume = 0;
+      sendIframeCommand("mute");
     }
   };
 
-  // Sync volume to audio/video elements on state change or mount
+  // Sync volume to audio/video elements and iframe on state change or mount
   useEffect(() => {
     const effective = isMuted ? 0 : volume;
     if (audioRef.current) audioRef.current.volume = effective;
     if (videoElementRef.current) videoElementRef.current.volume = effective;
+    sendIframeCommand("setVolume", [Math.round(effective * 100)]);
+    if (isMuted || effective === 0) {
+      sendIframeCommand("mute");
+    } else {
+      sendIframeCommand("unMute");
+    }
   }, [volume, isMuted, activeVideoPlaying]);
 
   // Unified Fullscreen Exit & Close Handlers
@@ -769,6 +813,7 @@ export default function App() {
     setActiveVideoPlaying(false);
     setNowPlaying({ type: "none", id: null });
     if (videoElementRef.current) videoElementRef.current.pause();
+    sendIframeCommand("pauseVideo");
   };
 
   // Keyboard Shortcuts Handler
@@ -825,18 +870,18 @@ export default function App() {
   }, [nowPlaying, isPlayingAudio, volume, isMuted]);
 
   // Browse Save Folder via plugin-dialog
-  const handleBrowseSaveFolder = async () => {
+  const handleBrowseFolder = async (key: "saveFolder" | "videoFolder" | "audioFolder" | "generalFolder" | "tempFolder") => {
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        defaultPath: settings.saveFolder,
+        defaultPath: (settings as any)[key] || settings.saveFolder,
       });
       if (selected && typeof selected === "string") {
-        updateSetting("saveFolder", selected);
+        updateSetting(key, selected);
       }
     } catch (err) {
-      console.error("Browse save folder error:", err);
+      console.error(`Browse ${key} error:`, err);
     }
   };
 
@@ -871,6 +916,7 @@ export default function App() {
     // When switching tabs, ensure we don't trigger accidental autoplay
     if (activeTab !== "downloads") {
       if (videoElementRef.current) videoElementRef.current.pause();
+      sendIframeCommand("pauseVideo");
     }
   }, [activeTab]);
 
@@ -1035,6 +1081,8 @@ export default function App() {
           speed: p.speed,
           eta: p.eta,
           file_path: p.file_path || newHistory[idx].file_path,
+          error_code: p.error_code || newHistory[idx].error_code,
+          error_message: p.error || newHistory[idx].error_message,
         };
         return newHistory;
       });
@@ -1051,10 +1099,12 @@ export default function App() {
     if (audioRef.current) audioRef.current.pause();
     setIsPlayingAudio(false);
     setPreviewingId(null);
+    setActiveAudioPlaying(null);
     setNowPlaying({ type: "video", id: targetVideo.id });
 
     // If selecting a video from playlist, promote to active main card
     if (!videoInfo || videoInfo.id !== targetVideo.id) {
+      setSelectedFormat(null);
       setVideoInfo({
         id: targetVideo.id,
         title: targetVideo.title,
@@ -1113,6 +1163,7 @@ export default function App() {
 
     // Enforce mutual exclusivity: stop any active video immediately
     if (videoElementRef.current) videoElementRef.current.pause();
+    sendIframeCommand("pauseVideo");
     setActiveVideoPlaying(false);
 
     if (previewingId === songId) {
@@ -1222,6 +1273,7 @@ export default function App() {
     if (!isUrl) {
       // Direct YouTube Search via ytsearch5:
       setFetchError("");
+      setSelectedFormat(null);
       setVideoInfo(null);
       setPlaylistInfo(null);
       setSearchResults(null);
@@ -1244,6 +1296,7 @@ export default function App() {
 
     setSearchResults(null);
     setFetchError("");
+    setSelectedFormat(null);
     setVideoInfo(null);
     setPlaylistInfo(null);
     setSelectedPlaylistItems(new Set());
@@ -1348,7 +1401,10 @@ export default function App() {
     if (!info) return;
     
     const taskId = `${info.id}-${Date.now()}`;
-    const displayFormat = isAudio ? `Audio (${ext.toUpperCase()})` : formatId;
+    const isClipTrimming = !specificInfo && isTrimming && trimStart && trimEnd;
+    const downloadSectionsArg = isClipTrimming ? `*${trimStart}-${trimEnd}` : null;
+    const baseDisplayFormat = isAudio ? `Audio (${ext.toUpperCase()})` : formatId;
+    const displayFormat = isClipTrimming ? `${baseDisplayFormat} [Clip ${trimStart}-${trimEnd}]` : baseDisplayFormat;
     
     const newRecord: DownloadRecord = {
       id: taskId,
@@ -1381,8 +1437,8 @@ export default function App() {
       ? `${settings.proxyProtocol}://${settings.proxyHost}:${settings.proxyPort}` 
       : null;
 
-    // Clip trimming range parameter (USP)
-    const downloadSectionsArg = isTrimming && trimStart && trimEnd ? `*${trimStart}-${trimEnd}` : null;
+    const chosenSaveDir = (isAudio ? settings.audioFolder : settings.videoFolder) || settings.saveFolder || null;
+    const chosenTempDir = settings.tempFolder ? settings.tempFolder : null;
 
     try {
       await invoke("start_download", {
@@ -1393,7 +1449,8 @@ export default function App() {
         isAudioOnly: isAudio,
         ext: ext,
         subfolder: settings.autoOrganize ? (isAudio ? "Audio" : "Video") : null,
-        customDir: settings.saveFolder ? settings.saveFolder : null,
+        customDir: chosenSaveDir,
+        tempDir: chosenTempDir,
         speedLimit: speedLimitArg,
         proxy: proxyArg,
         customFlags: settings.customFlags ? settings.customFlags : null,
@@ -1402,6 +1459,59 @@ export default function App() {
       });
     } catch (e: any) {
       console.error("Start download failed:", e);
+    }
+  };
+
+  const handleRetryDownload = async (record: DownloadRecord) => {
+    const isAudio = isAudioFormat(record.format);
+    const extMatch = record.format.match(/\(([A-Z0-9]+)\)/i);
+    const ext = extMatch ? extMatch[1].toLowerCase() : (isAudio ? "mp3" : "mp4");
+    const formatId = isAudio ? "bestaudio/best" : (record.format.includes("[") ? record.format : "bestvideo+bestaudio/best");
+    
+    setHistory(prev => prev.map(r => r.id === record.id ? {
+      ...r,
+      status: "starting",
+      percent: 0,
+      speed: "0 B/s",
+      eta: "--",
+      error_code: undefined,
+      error_message: undefined,
+    } : r));
+
+    setActiveCardTaskId(record.id);
+
+    const speedLimitArg = settings.speedLimit === "unlimited" 
+      ? null 
+      : settings.speedLimit === "custom" 
+        ? settings.customSpeedLimit 
+        : settings.speedLimit;
+
+    const proxyArg = settings.proxyEnabled && settings.proxyHost 
+      ? `${settings.proxyProtocol}://${settings.proxyHost}:${settings.proxyPort}` 
+      : null;
+
+    const chosenSaveDir = (isAudio ? settings.audioFolder : settings.videoFolder) || settings.saveFolder || null;
+    const chosenTempDir = settings.tempFolder ? settings.tempFolder : null;
+
+    try {
+      await invoke("start_download", {
+        taskId: record.id,
+        url: record.url,
+        title: record.title,
+        formatId: formatId,
+        isAudioOnly: isAudio,
+        ext: ext,
+        subfolder: settings.autoOrganize ? (isAudio ? "Audio" : "Video") : null,
+        customDir: chosenSaveDir,
+        tempDir: chosenTempDir,
+        speedLimit: speedLimitArg,
+        proxy: proxyArg,
+        customFlags: settings.customFlags ? settings.customFlags : null,
+        scanAntivirus: settings.scanAntivirus,
+        downloadSections: null,
+      });
+    } catch (e: any) {
+      console.error("Retry download failed:", e);
     }
   };
 
@@ -1414,18 +1524,16 @@ export default function App() {
     const useExt = ext || batchExt;
     const useIsAudio = isAudio !== undefined ? isAudio : batchIsAudio;
 
-    const taskIds: string[] = [];
-    for (const entry of entries) {
-      const taskId = `${entry.id}-${Date.now()}`;
-      taskIds.push(taskId);
-      await handleStartDownload(useFmtId, useExt, useIsAudio, entry);
-    }
-
+    const taskIds = entries.map(e => e.id);
     setActivePlaylistBatch({
       title: playlistInfo.title,
       taskIds,
       formatLabel: useIsAudio ? `Audio (${useExt.toUpperCase()})` : `${useExt.toUpperCase()}`,
     });
+
+    for (const entry of entries) {
+      await handleStartDownload(useFmtId, useExt, useIsAudio, entry);
+    }
   };
 
   const handleRemoveHistory = async (id: string) => {
@@ -1527,7 +1635,8 @@ export default function App() {
                     ext: "mp4", 
                     isAudioOnly: false,
                     subfolder: "Video",
-                    customDir: settings.saveFolder ? settings.saveFolder : null,
+                    customDir: settings.videoFolder || settings.saveFolder || null,
+                    tempDir: settings.tempFolder ? settings.tempFolder : null,
                     speedLimit: null,
                     proxy: null,
                     customFlags: null,
@@ -1634,6 +1743,7 @@ export default function App() {
 
       {/* Main Workspace Body */}
       <main ref={mainScrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
+        <ErrorBoundary fallbackTitle="An error occurred in this workspace view">
         
         {/* ===================== TAB 1: DOWNLOADS ===================== */}
         {activeTab === "downloads" && (
@@ -1845,12 +1955,22 @@ export default function App() {
                             className="w-full h-full object-contain"
                           />
                         ) : (
-                          // High compatibility fallback iframe for YouTube
+                          // High compatibility fallback iframe for YouTube with IFrame API volume control
                           <iframe
-                            src={`https://www.youtube-nocookie.com/embed/${videoInfo.id}?autoplay=${settings.autoplay ? "1" : "0"}&rel=0`}
+                            ref={iframeRef}
+                            src={`https://www.youtube-nocookie.com/embed/${videoInfo.id}?enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&autoplay=${settings.autoplay ? "1" : "0"}&rel=0`}
                             title={videoInfo.title}
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
                             allowFullScreen
+                            onLoad={() => {
+                              const effective = isMuted ? 0 : volume;
+                              sendIframeCommand("setVolume", [Math.round(effective * 100)]);
+                              if (isMuted || effective === 0) {
+                                sendIframeCommand("mute");
+                              } else {
+                                sendIframeCommand("unMute");
+                              }
+                            }}
                             className="w-full h-full border-0"
                           />
                         )}
@@ -2163,32 +2283,88 @@ export default function App() {
                       )}
                     </div>
                     
-                    {/* Step 6: Live Download Progress Bar on Card instead of Disappearing */}
+                    {/* Step 6: Live Download Progress Bar on Card with Proper Error State & Retry */}
                     {activeCardTask && (
-                      <div className="mt-3 p-3 rounded-md bg-surface-0 border border-accent/30 space-y-2 animate-in fade-in duration-fast">
+                      <div className={`mt-3 p-3 rounded-md bg-surface-0 border space-y-2 animate-in fade-in duration-fast ${
+                        activeCardTask.status === "error" ? "border-status-danger/40 bg-status-danger-subtle/10" : "border-accent/30"
+                      }`}>
                         <div className="flex items-center justify-between text-caption font-semibold">
-                          <span className="flex items-center gap-1.5 text-accent">
-                            {activeCardTask.status === "completed" ? (
+                          <span className={`flex items-center gap-1.5 ${
+                            activeCardTask.status === "error" ? "text-status-danger" :
+                            activeCardTask.status === "completed" ? "text-status-success" : "text-accent"
+                          }`}>
+                            {activeCardTask.status === "error" ? (
+                              <AlertCircle size={14} className="text-status-danger" />
+                            ) : activeCardTask.status === "completed" ? (
                               <CheckCircle2 size={14} className="text-status-success" />
                             ) : (
                               <Loader2 size={14} className="animate-spin text-accent" />
                             )}
-                            <span>{activeCardTask.status === "completed" ? "Download Completed" : `Downloading (${activeCardTask.percent.toFixed(0)}%)`}</span>
+                            <span>
+                              {activeCardTask.status === "error" 
+                                ? "Download Failed" 
+                                : activeCardTask.status === "completed" 
+                                  ? "Download Completed" 
+                                  : `Downloading (${activeCardTask.percent.toFixed(0)}%)`}
+                            </span>
                           </span>
                           <span className="text-caption font-mono text-secondary text-[11px]">
-                            {activeCardTask.speed && activeCardTask.speed !== "0 B/s" ? activeCardTask.speed : ""} {activeCardTask.eta ? `• ETA: ${activeCardTask.eta}` : ""}
+                            {activeCardTask.status === "downloading" && activeCardTask.speed && activeCardTask.speed !== "0 B/s" ? activeCardTask.speed : ""} {activeCardTask.status === "downloading" && activeCardTask.eta ? `• ETA: ${activeCardTask.eta}` : ""}
                           </span>
                         </div>
 
-                        <div className="h-1.5 bg-surface-2 rounded-full overflow-hidden">
-                          <div 
-                            className={`h-full transition-all duration-fast ${activeCardTask.status === "completed" ? "bg-status-success" : "bg-accent"}`}
-                            style={{ width: `${activeCardTask.percent}%` }}
-                          />
-                        </div>
+                        {activeCardTask.status === "error" ? (
+                          <div className="p-2 bg-status-danger-subtle/30 rounded border border-status-danger/20 text-[11px] text-status-danger flex items-start gap-2">
+                            <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold">
+                                {ERROR_MESSAGES[activeCardTask.error_code || "unknown"] || ERROR_MESSAGES.unknown}
+                              </p>
+                              {activeCardTask.error_message && (
+                                <p className="text-[10px] text-secondary mt-0.5 truncate font-mono">
+                                  {activeCardTask.error_message.slice(0, 140)}
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRetryDownload(activeCardTask)}
+                              className="px-2.5 py-1 rounded bg-status-danger hover:bg-status-danger/90 text-white font-semibold text-[10px] flex items-center gap-1 shrink-0 shadow-sm transition-all active:scale-95"
+                            >
+                              <RotateCcw size={10} /> Retry
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="h-1.5 bg-surface-2 rounded-full overflow-hidden">
+                              <div 
+                                className={`h-full transition-all duration-fast ${activeCardTask.status === "completed" ? "bg-status-success" : "bg-accent"}`}
+                                style={{ width: `${activeCardTask.percent}%` }}
+                              />
+                            </div>
+
+                            {/* Priority 6: Dedicated surface-2 metrics box under progress bar on active card */}
+                            {(activeCardTask.status === "downloading" || activeCardTask.status === "muxing") && (
+                              <div className="mt-2 px-2.5 py-1.5 rounded bg-surface-2/70 border border-border-subtle/40 grid grid-cols-3 gap-2 text-[11px] font-mono">
+                                <div>
+                                  <span className="text-[10px] uppercase text-tertiary block font-sans">Speed</span>
+                                  <span className="text-secondary font-medium">{activeCardTask.speed && activeCardTask.speed !== "0 B/s" ? activeCardTask.speed : "Calculating..."}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[10px] uppercase text-tertiary block font-sans">ETA</span>
+                                  <span className="text-secondary font-medium">{activeCardTask.eta || "--:--"}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[10px] uppercase text-tertiary block font-sans">Progress</span>
+                                  <span className="text-secondary font-medium">{activeCardTask.percent.toFixed(0)}%</span>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
 
                         <div className="flex items-center justify-between text-caption pt-0.5">
-                          {activeCardTask.file_path ? (
+                          {activeCardTask.file_path && activeCardTask.status === "completed" ? (
                             <button
                               type="button"
                               onClick={() => openFile(activeCardTask.file_path)}
@@ -2208,7 +2384,7 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* 2 DISTINCT SECTIONS: Video Formats & Audio Formats */}
+                    {/* 2 DISTINCT SECTIONS: Video Formats & Audio Formats + Explicit Gated Download Button */}
                     <div className="mt-3 pt-3 border-t border-border-subtle space-y-3">
                       {videoInfo.video_formats && videoInfo.video_formats.length > 0 ? (
                         <>
@@ -2220,31 +2396,39 @@ export default function App() {
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               {/* Primary Video Pills */}
-                              {videoInfo.video_formats.slice(0, 3).map((f) => (
-                                <button
-                                  key={f.format_id + f.label}
-                                  onClick={() => handleStartDownload(f.format_id, f.ext, false)}
-                                  className={`px-3 py-1.5 rounded-md text-caption font-semibold transition-all hover:scale-[1.02] active:scale-[0.98] ${
-                                    f.resolution === "1080p" || f.resolution === "Max"
-                                      ? "bg-accent text-white hover:bg-accent-hover shadow-sm"
-                                      : "bg-surface-2 text-primary hover:bg-surface-0"
-                                  }`}
-                                >
-                                  {f.label}
-                                </button>
-                              ))}
+                              {videoInfo.video_formats.slice(0, 3).map((f) => {
+                                const isSelected = selectedFormat?.format_id === f.format_id && !selectedFormat?.is_audio_only;
+                                return (
+                                  <button
+                                    key={f.format_id + f.label}
+                                    type="button"
+                                    onClick={() => setSelectedFormat(f)}
+                                    className={`px-3 py-1.5 rounded-md text-caption font-semibold transition-all hover:scale-[1.02] active:scale-[0.98] ${
+                                      isSelected
+                                        ? "bg-accent text-white ring-2 ring-accent ring-offset-2 ring-offset-surface-1 shadow-sm font-bold"
+                                        : "bg-surface-2 text-primary hover:bg-surface-0 border border-border-subtle"
+                                    }`}
+                                  >
+                                    {f.label}
+                                  </button>
+                                );
+                              })}
 
                               {/* Video Dropdown for Secondary Options */}
                               {videoInfo.video_formats.length > 3 && (
                                 <div className="relative inline-block">
                                   <select
+                                    value={
+                                      selectedFormat && !selectedFormat.is_audio_only &&
+                                      videoInfo.video_formats.slice(3).some(x => x.format_id === selectedFormat.format_id)
+                                        ? selectedFormat.format_id
+                                        : ""
+                                    }
                                     onChange={(e) => {
                                       if (!e.target.value) return;
                                       const f = videoInfo.video_formats.find(x => x.format_id === e.target.value);
-                                      if (f) handleStartDownload(f.format_id, f.ext, false);
-                                      e.target.value = "";
+                                      if (f) setSelectedFormat(f);
                                     }}
-                                    defaultValue=""
                                     className="bg-surface-2 hover:bg-surface-0 text-primary border border-border-subtle px-2.5 py-1.5 rounded-md text-caption font-semibold outline-none cursor-pointer"
                                   >
                                     <option value="" disabled>{t("more_video")}</option>
@@ -2267,32 +2451,44 @@ export default function App() {
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               {/* Primary Audio Pills */}
-                              {videoInfo.audio_formats.slice(0, 2).map((f) => (
-                                <button
-                                  key={f.format_id + f.label}
-                                  onClick={() => handleStartDownload(f.format_id, f.ext, true)}
-                                  className="px-3 py-1.5 rounded-md bg-surface-2 hover:bg-surface-0 text-primary text-caption font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                >
-                                  {f.label}
-                                </button>
-                              ))}
+                              {videoInfo.audio_formats.slice(0, 2).map((f) => {
+                                const isSelected = selectedFormat?.format_id === f.format_id && selectedFormat?.is_audio_only;
+                                return (
+                                  <button
+                                    key={f.format_id + f.label}
+                                    type="button"
+                                    onClick={() => setSelectedFormat(f)}
+                                    className={`px-3 py-1.5 rounded-md text-caption font-semibold transition-all hover:scale-[1.02] active:scale-[0.98] ${
+                                      isSelected
+                                        ? "bg-accent text-white ring-2 ring-accent ring-offset-2 ring-offset-surface-1 shadow-sm font-bold"
+                                        : "bg-surface-2 text-primary hover:bg-surface-0 border border-border-subtle"
+                                    }`}
+                                  >
+                                    {f.label}
+                                  </button>
+                                );
+                              })}
 
                               {/* Audio Dropdown for Secondary Options */}
                               {videoInfo.audio_formats.length > 2 && (
                                 <div className="relative inline-block">
                                   <select
+                                    value={
+                                      selectedFormat && selectedFormat.is_audio_only &&
+                                      videoInfo.audio_formats.slice(2).some(x => x.format_id === selectedFormat.format_id)
+                                        ? selectedFormat.format_id
+                                        : ""
+                                    }
                                     onChange={(e) => {
                                       if (!e.target.value) return;
-                                      const f = videoInfo.audio_formats.find(x => x.label === e.target.value);
-                                      if (f) handleStartDownload(f.format_id, f.ext, true);
-                                      e.target.value = "";
+                                      const f = videoInfo.audio_formats.find(x => x.format_id === e.target.value || x.label === e.target.value);
+                                      if (f) setSelectedFormat(f);
                                     }}
-                                    defaultValue=""
                                     className="bg-surface-2 hover:bg-surface-0 text-primary border border-border-subtle px-2.5 py-1.5 rounded-md text-caption font-semibold outline-none cursor-pointer"
                                   >
                                     <option value="" disabled>{t("more_audio")}</option>
                                     {videoInfo.audio_formats.slice(2).map((f) => (
-                                      <option key={f.format_id + f.label} value={f.label}>
+                                      <option key={f.format_id + f.label} value={f.format_id}>
                                         {f.label}
                                       </option>
                                     ))}
@@ -2300,6 +2496,40 @@ export default function App() {
                                 </div>
                               )}
                             </div>
+                          </div>
+
+                          {/* Priority 3: Explicit Gated Primary Download Action */}
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              disabled={!selectedFormat || !!(activeCardTask && (activeCardTask.status === "starting" || activeCardTask.status === "downloading" || activeCardTask.status === "muxing"))}
+                              onClick={() => {
+                                if (selectedFormat) {
+                                  handleStartDownload(selectedFormat.format_id, selectedFormat.ext, selectedFormat.is_audio_only);
+                                }
+                              }}
+                              className={`w-full py-2.5 px-4 rounded-md font-semibold text-body-sm flex items-center justify-center gap-2 transition-all shadow-sm ${
+                                selectedFormat && !(activeCardTask && (activeCardTask.status === "starting" || activeCardTask.status === "downloading" || activeCardTask.status === "muxing"))
+                                  ? "bg-accent hover:bg-accent-hover text-white active:scale-[0.99] cursor-pointer"
+                                  : "bg-surface-2 text-tertiary cursor-not-allowed opacity-60 border border-border-subtle"
+                              }`}
+                            >
+                              {activeCardTask && (activeCardTask.status === "starting" || activeCardTask.status === "downloading" || activeCardTask.status === "muxing") ? (
+                                <>
+                                  <Loader2 size={16} className="animate-spin text-accent" />
+                                  <span>Downloading {selectedFormat ? `${selectedFormat.label}` : ""} ({activeCardTask.percent.toFixed(0)}%)...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Download size={16} />
+                                  <span>
+                                    {selectedFormat
+                                      ? `Download ${selectedFormat.label} (${selectedFormat.is_audio_only ? "Audio" : selectedFormat.ext.toUpperCase()})`
+                                      : "Select a quality or audio format above to download"}
+                                  </span>
+                                </>
+                              )}
+                            </button>
                           </div>
                         </>
                       ) : (
@@ -2422,6 +2652,7 @@ export default function App() {
                       {playlistInfo.entries.map((entry, idx) => {
                         const isSelected = selectedPlaylistItems.has(entry.id);
                         const isThisPreviewing = previewingId === entry.id;
+                        const entryTask = history.find(h => h.id.startsWith(entry.id) || h.url.includes(entry.id));
 
                         return (
                           <div 
@@ -2460,8 +2691,33 @@ export default function App() {
                                 <p className="text-body-sm font-semibold text-primary truncate cursor-pointer hover:text-accent" onClick={() => handlePlayVideo(entry)} title={entry.title}>
                                   {entry.title}
                                 </p>
-                                <span className="text-caption text-tertiary text-[11px]">{entry.duration_string}</span>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <span className="text-caption text-tertiary text-[11px]">{entry.duration_string}</span>
+                                  {entryTask && (
+                                    <span className={`text-[10px] font-semibold px-1.5 py-0.2 rounded font-mono flex items-center gap-1 ${
+                                      entryTask.status === "completed" ? "bg-status-success-subtle/30 text-status-success" :
+                                      entryTask.status === "error" ? "bg-status-danger-subtle/30 text-status-danger" :
+                                      "bg-accent-subtle text-accent"
+                                    }`}>
+                                      {entryTask.status === "downloading" && <Loader2 size={9} className="animate-spin" />}
+                                      {entryTask.status === "downloading" ? `${entryTask.percent.toFixed(0)}%` :
+                                       entryTask.status === "completed" ? "Downloaded" :
+                                       entryTask.status === "error" ? "Failed" : entryTask.status}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
+
+                              {/* Single Track Download Button */}
+                              <button
+                                type="button"
+                                disabled={entryTask?.status === "downloading" || entryTask?.status === "starting" || entryTask?.status === "muxing"}
+                                onClick={() => handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry)}
+                                className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-accent flex items-center justify-center shrink-0 transition-colors border border-border-subtle shadow-sm disabled:opacity-40"
+                                title="Download this track directly"
+                              >
+                                <Download size={12} />
+                              </button>
 
                               {/* Audio Listen Preview Button */}
                               <button
@@ -2479,6 +2735,13 @@ export default function App() {
                                 )}
                               </button>
                             </div>
+
+                            {/* In-Line Mini Progress Bar for this Playlist Track */}
+                            {entryTask && (entryTask.status === "downloading" || entryTask.status === "muxing") && (
+                              <div className="h-1 bg-surface-2 rounded-full overflow-hidden mt-2 ml-7 mr-1">
+                                <div className="h-full bg-accent transition-all duration-fast" style={{ width: `${entryTask.percent}%` }} />
+                              </div>
+                            )}
 
                             {/* In-Line Audio Scrubbing for playlist tracks */}
                             {isThisPreviewing && (
@@ -2563,7 +2826,7 @@ export default function App() {
                 </div>
 
                 {(() => {
-                  const batchItems = history.filter(h => activePlaylistBatch.taskIds.includes(h.id));
+                  const batchItems = history.filter(h => activePlaylistBatch.taskIds.some(id => h.id.startsWith(id) || h.id === id));
                   const finished = batchItems.filter(h => h.status === "completed").length;
                   const total = activePlaylistBatch.taskIds.length;
                   const avgPercent = batchItems.length > 0
@@ -2589,7 +2852,8 @@ export default function App() {
 
             {/* Downloads Activity List with Categorization Tabs, Real-Time Search & Sorting */}
             <div className="space-y-3 pt-1">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              {/* Priority 8: Filter bar container with reserved min-height to prevent layout reflow */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-h-[72px] sm:min-h-[42px]">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
                     <h3 className="text-body-sm font-semibold text-primary">{t("activity_title")}</h3>
@@ -2674,6 +2938,7 @@ export default function App() {
                       onOpenFile={() => openFile(record.file_path)}
                       onRemove={() => handleRemoveHistory(record.id)}
                       onDeleteFile={() => handleDeleteFile(record.id, record.file_path)}
+                      onRetry={() => handleRetryDownload(record)}
                       tOpenFolder={t("open_folder")}
                       tOpenFile={t("open_file")}
                       tRemoveRow={t("remove_row")}
@@ -2750,6 +3015,46 @@ export default function App() {
               </div>
             </div>
 
+            {/* Priority 5: Active Audio Hub In-Flight Extraction Progress */}
+            {history.filter(h => isAudioFormat(h.format) && (h.status === "starting" || h.status === "downloading" || h.status === "muxing")).length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5 text-caption font-semibold text-secondary uppercase tracking-wider">
+                  <Loader2 size={12} className="animate-spin text-accent" />
+                  <span>Active Conversions ({history.filter(h => isAudioFormat(h.format) && (h.status === "starting" || h.status === "downloading" || h.status === "muxing")).length})</span>
+                </div>
+                {history.filter(h => isAudioFormat(h.format) && (h.status === "starting" || h.status === "downloading" || h.status === "muxing")).map(task => (
+                  <div key={task.id} className="p-3 bg-surface-1 border border-accent/30 rounded-md space-y-2 animate-in fade-in duration-fast">
+                    <div className="flex items-center justify-between text-caption font-semibold">
+                      <div className="flex items-center gap-2 truncate">
+                        <Music size={13} className="text-accent shrink-0" />
+                        <span className="text-primary truncate">{task.title}</span>
+                      </div>
+                      <span className="text-secondary font-mono text-[11px] shrink-0">
+                        {task.speed || ""} {task.eta ? `• ETA: ${task.eta}` : ""}
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-surface-0 rounded-full overflow-hidden">
+                      <div className="h-full bg-accent transition-all duration-fast" style={{ width: `${task.percent}%` }} />
+                    </div>
+                    <div className="px-2 py-1 rounded bg-surface-2/70 border border-border-subtle/40 grid grid-cols-3 gap-2 text-[11px] font-mono">
+                      <div>
+                        <span className="text-[10px] uppercase text-tertiary block font-sans">Speed</span>
+                        <span className="text-secondary font-medium">{task.speed && task.speed !== "0 B/s" ? task.speed : "Calculating..."}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase text-tertiary block font-sans">ETA</span>
+                        <span className="text-secondary font-medium">{task.eta || "--:--"}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase text-tertiary block font-sans">Progress</span>
+                        <span className="text-secondary font-medium">{task.percent.toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Offline Music Library */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -2771,10 +3076,15 @@ export default function App() {
                         <button 
                           onClick={() => {
                             if (activeAudioPlaying?.id === item.id) {
-                              if (isPlayingAudio) { audioRef.current?.pause(); setIsPlayingAudio(false); }
-                              else { audioRef.current?.play(); setIsPlayingAudio(true); }
+                              if (isPlayingAudio) { audioRef.current?.pause(); setIsPlayingAudio(false); setNowPlaying({ type: "none", id: null }); }
+                              else { audioRef.current?.play(); setIsPlayingAudio(true); setNowPlaying({ type: "audio", id: item.id }); }
                             } else if (item.file_path) {
+                              if (videoElementRef.current) videoElementRef.current.pause();
+                              sendIframeCommand("pauseVideo");
+                              setActiveVideoPlaying(false);
+                              setPreviewingId(null);
                               setActiveAudioPlaying(item);
+                              setNowPlaying({ type: "audio", id: item.id });
                               if (audioRef.current) {
                                 audioRef.current.src = item.file_path;
                                 audioRef.current.volume = isMuted ? 0 : volume;
@@ -2923,7 +3233,7 @@ export default function App() {
                   />
                   <button 
                     type="button"
-                    onClick={handleBrowseSaveFolder} 
+                    onClick={() => handleBrowseFolder("saveFolder")} 
                     className="px-3 py-1 rounded-md bg-accent text-white hover:bg-accent-hover text-caption font-semibold transition-colors shadow-sm"
                   >
                     Browse...
@@ -2935,6 +3245,130 @@ export default function App() {
                   >
                     Open
                   </button>
+                </div>
+              </SettingRow>
+
+              {/* Priority 9: Video Downloads Location */}
+              <SettingRow title="Video Downloads Location" desc="Override save folder for video files (defaults to base folder if unset)">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    placeholder="Same as base folder"
+                    value={settings.videoFolder || ""} 
+                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                    title={settings.videoFolder || "Same as base folder"}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => handleBrowseFolder("videoFolder")} 
+                    className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle"
+                  >
+                    Browse...
+                  </button>
+                  {settings.videoFolder && (
+                    <button 
+                      type="button"
+                      onClick={() => updateSetting("videoFolder", "")} 
+                      className="px-2 py-1 rounded-md text-caption text-tertiary hover:text-status-danger"
+                      title="Reset to default base folder"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </SettingRow>
+
+              {/* Priority 9: Audio Downloads Location */}
+              <SettingRow title="Audio Downloads Location" desc="Override save folder for extracted audio & songs (defaults to base folder if unset)">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    placeholder="Same as base folder"
+                    value={settings.audioFolder || ""} 
+                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                    title={settings.audioFolder || "Same as base folder"}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => handleBrowseFolder("audioFolder")} 
+                    className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle"
+                  >
+                    Browse...
+                  </button>
+                  {settings.audioFolder && (
+                    <button 
+                      type="button"
+                      onClick={() => updateSetting("audioFolder", "")} 
+                      className="px-2 py-1 rounded-md text-caption text-tertiary hover:text-status-danger"
+                      title="Reset to default base folder"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </SettingRow>
+
+              {/* Priority 9: General Files Location */}
+              <SettingRow title="General Files Location" desc="Override save folder for documents, archives & direct links (defaults to base folder if unset)">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    placeholder="Same as base folder"
+                    value={settings.generalFolder || ""} 
+                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                    title={settings.generalFolder || "Same as base folder"}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => handleBrowseFolder("generalFolder")} 
+                    className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle"
+                  >
+                    Browse...
+                  </button>
+                  {settings.generalFolder && (
+                    <button 
+                      type="button"
+                      onClick={() => updateSetting("generalFolder", "")} 
+                      className="px-2 py-1 rounded-md text-caption text-tertiary hover:text-status-danger"
+                      title="Reset to default base folder"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </SettingRow>
+
+              {/* Priority 9: Temporary / .part Files Location */}
+              <SettingRow title="Temporary / .part Files Location" desc="Fast scratch location for in-progress segments before moving to final destination">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    placeholder="Default (System Temp / Base)"
+                    value={settings.tempFolder || ""} 
+                    className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                    title={settings.tempFolder || "Default (System Temp / Base)"}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => handleBrowseFolder("tempFolder")} 
+                    className="px-3 py-1 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold border border-border-subtle"
+                  >
+                    Browse...
+                  </button>
+                  {settings.tempFolder && (
+                    <button 
+                      type="button"
+                      onClick={() => updateSetting("tempFolder", "")} 
+                      className="px-2 py-1 rounded-md text-caption text-tertiary hover:text-status-danger"
+                      title="Reset to default scratch location"
+                    >
+                      Reset
+                    </button>
+                  )}
                 </div>
               </SettingRow>
 
@@ -3168,6 +3602,7 @@ export default function App() {
           </div>
         )}
 
+        </ErrorBoundary>
       </main>
     </div>
   );
@@ -3230,13 +3665,14 @@ function StatTile({
   );
 }
 
-// History Item with Double-Click, Dedicated Icon Buttons, File Size, and Live Speed/ETA
+// History Item with Double-Click, Dedicated Icon Buttons, File Size, Live Speed/ETA, and Error/Retry Card State
 function HistoryItem({ 
   record, 
   onOpenFolder, 
   onOpenFile,
   onRemove, 
   onDeleteFile,
+  onRetry,
   tOpenFolder,
   tOpenFile,
   tRemoveRow,
@@ -3247,6 +3683,7 @@ function HistoryItem({
   onOpenFile: () => void;
   onRemove: () => void; 
   onDeleteFile: () => void;
+  onRetry?: () => void;
   tOpenFolder: string;
   tOpenFile: string;
   tRemoveRow: string;
@@ -3262,11 +3699,15 @@ function HistoryItem({
           onOpenFile();
         }
       }}
-      className="bg-surface-1 rounded-md p-3 flex gap-3 transition-all shadow-raised relative group cursor-pointer hover:border-border-subtle"
+      className={`bg-surface-1 rounded-md p-3 flex gap-3 transition-all shadow-raised relative group cursor-pointer hover:border-border-subtle ${
+        record.status === "error" ? "border border-status-danger/30" : ""
+      }`}
       title={record.status === "completed" ? "Double-click to open file" : undefined}
     >
-      <div className="w-16 aspect-video bg-surface-0 rounded-sm flex items-center justify-center text-tertiary shrink-0">
-        <PlayCircle size={18} className="opacity-40" />
+      <div className={`w-16 aspect-video rounded-sm flex items-center justify-center shrink-0 ${
+        record.status === "error" ? "bg-status-danger-subtle/30 text-status-danger" : "bg-surface-0 text-tertiary"
+      }`}>
+        {record.status === "error" ? <AlertCircle size={18} /> : <PlayCircle size={18} className="opacity-40" />}
       </div>
       
       <div className="flex-1 min-w-0 flex flex-col justify-center">
@@ -3276,17 +3717,19 @@ function HistoryItem({
               {record.title}
             </h4>
             <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-caption text-secondary text-[10px] uppercase font-mono">{record.format}</span>
-              {record.file_size && record.file_size > 0 && (
-                <span className="text-caption text-secondary font-mono text-[10px] bg-surface-2 px-1.5 py-0.2 rounded">
-                  {formatFileSize(record.file_size)}
+              {record.status === "error" ? (
+                <span className="text-caption text-status-danger font-medium text-[11px] flex items-center gap-1">
+                  <span>{ERROR_MESSAGES[record.error_code || "unknown"] || ERROR_MESSAGES.unknown}</span>
                 </span>
-              )}
-              {/* Step 8: Surface live speed and ETA with high contrast font-medium */}
-              {record.status === "downloading" && record.speed && record.speed !== "0 B/s" && (
-                <span className="text-caption font-mono font-medium text-secondary text-[11px]">
-                  {record.speed} {record.eta ? `• ETA: ${record.eta}` : ""}
-                </span>
+              ) : (
+                <>
+                  <span className="text-caption text-secondary text-[10px] uppercase font-mono">{record.format}</span>
+                  {record.file_size && record.file_size > 0 && (
+                    <span className="text-caption text-secondary font-mono text-[10px] bg-surface-2 px-1.5 py-0.2 rounded">
+                      {formatFileSize(record.file_size)}
+                    </span>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -3303,7 +3746,20 @@ function HistoryItem({
               {display.label} {record.status === "downloading" && `${record.percent.toFixed(0)}%`}
             </span>
             
-            {/* Step 7: Dedicated Icon Buttons visible directly without opening menu */}
+            {/* Retry Button for Failed Downloads */}
+            {record.status === "error" && onRetry && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onRetry(); }}
+                className="px-2.5 py-1 rounded-md bg-status-danger hover:bg-status-danger/90 text-white flex items-center gap-1 text-[11px] font-semibold transition-all shadow-sm active:scale-95 shrink-0"
+                title="Retry download"
+              >
+                <RotateCcw size={11} />
+                <span>Retry</span>
+              </button>
+            )}
+
+            {/* Dedicated Icon Buttons visible directly without opening menu */}
             <div className="flex items-center gap-1">
               {record.status === "completed" && record.file_path && (
                 <button
@@ -3370,20 +3826,35 @@ function HistoryItem({
           </div>
         </div>
 
-        <div className="h-1 bg-surface-0 rounded-full overflow-hidden mt-0.5">
-          {display.progressMode === "determinate" && (
-            <div className="h-full bg-accent transition-all duration-fast" style={{ width: `${record.percent}%` }} />
-          )}
-          {display.progressMode === "indeterminate" && (
-            <div className="h-full bg-accent w-1/3 animate-pulse" />
-          )}
-          {record.status === "completed" && (
-            <div className="h-full bg-status-success w-full" />
-          )}
-          {record.status === "error" && (
-            <div className="h-full bg-status-danger w-full opacity-50" />
-          )}
-        </div>
+        {/* Progress Bar (hidden on error/completed) */}
+        {display.progressMode !== "hidden" && (
+          <div className="h-1 bg-surface-0 rounded-full overflow-hidden mt-0.5">
+            {display.progressMode === "determinate" && (
+              <div className="h-full bg-accent transition-all duration-fast" style={{ width: `${record.percent}%` }} />
+            )}
+            {display.progressMode === "indeterminate" && (
+              <div className="h-full bg-accent w-1/3 animate-pulse" />
+            )}
+          </div>
+        )}
+
+        {/* Priority 6: Dedicated surface-2 metrics box under progress bar during download */}
+        {(record.status === "downloading" || record.status === "muxing") && (
+          <div className="mt-2 px-2.5 py-1.5 rounded bg-surface-2/70 border border-border-subtle/40 grid grid-cols-3 gap-2 text-[11px] font-mono">
+            <div>
+              <span className="text-[10px] uppercase text-tertiary block font-sans">Speed</span>
+              <span className="text-secondary font-medium">{record.speed && record.speed !== "0 B/s" ? record.speed : "Calculating..."}</span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase text-tertiary block font-sans">ETA</span>
+              <span className="text-secondary font-medium">{record.eta || "--:--"}</span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase text-tertiary block font-sans">Progress</span>
+              <span className="text-secondary font-medium">{record.percent.toFixed(0)}%</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

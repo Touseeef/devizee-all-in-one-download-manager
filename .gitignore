@@ -23,5 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-
 src-tauri/bin/*.exe
+src-tauri/Downloads/
+native_host/*.exe

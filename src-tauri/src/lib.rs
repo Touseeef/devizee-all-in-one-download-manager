@@ -359,6 +359,71 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
     })
 }
 
+fn categorize_error(stderr: &str) -> &'static str {
+    let lower = stderr.to_lowercase();
+    if lower.contains("network is unreachable")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("timed out")
+        || lower.contains("unable to download webpage")
+        || lower.contains("temporary failure in name resolution")
+        || lower.contains("getaddrinfo failed")
+        || lower.contains("errno 11001")
+        || lower.contains("ssl: certificate_verify_failed")
+        || lower.contains("http error 5")
+    {
+        "network"
+    } else if lower.contains("sign in to confirm your age")
+        || lower.contains("age-restricted")
+        || lower.contains("confirm you're not a bot")
+        || lower.contains("bot detection")
+    {
+        "age_restricted"
+    } else if lower.contains("video unavailable")
+        || lower.contains("video is unavailable")
+        || lower.contains("unavailable")
+        || lower.contains("this video has been removed")
+        || lower.contains("private video")
+        || lower.contains("copyright claim")
+        || lower.contains("not available in your country")
+        || lower.contains("requested format is not available")
+        || lower.contains("http error 404")
+        || lower.contains("http error 403")
+    {
+        "unavailable"
+    } else if lower.contains("no space left on device")
+        || lower.contains("disk full")
+        || lower.contains("not enough space")
+        || lower.contains("os error 112")
+    {
+        "disk_full"
+    } else if lower.contains("verification failed") || lower.contains("corrupt") {
+        "verification_failed"
+    } else {
+        "unknown"
+    }
+}
+
+fn log_download_error(app: &tauri::AppHandle, task_id: &str, url: &str, error_code: &str, stderr: &str) {
+    if let Ok(app_dir) = app.path().app_local_data_dir() {
+        let logs_dir = app_dir.join("logs");
+        let _ = std::fs::create_dir_all(&logs_dir);
+        let log_file = logs_dir.join("downloads.log");
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = writeln!(
+                file,
+                "[{}] Task: {} | URL: {} | Code: {}\nStderr:\n{}\n----------------------------------------",
+                timestamp, task_id, url, error_code, stderr
+            );
+        }
+    }
+}
+
 /// Tauri command to trigger a download and stream stdout progress events
 #[tauri::command]
 async fn start_download(
@@ -370,6 +435,7 @@ async fn start_download(
     ext: String,
     subfolder: Option<String>,
     custom_dir: Option<String>,
+    temp_dir: Option<String>,
     speed_limit: Option<String>,
     proxy: Option<String>,
     custom_flags: Option<String>,
@@ -380,15 +446,25 @@ async fn start_download(
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let ffmpeg_path_opt = get_ffmpeg_path(&app);
 
+    let user_download_dir = app.path().download_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut download_dir = if let Some(ref dir) = custom_dir {
         let dir_clean = dir.trim();
         if !dir_clean.is_empty() {
-            PathBuf::from(dir_clean)
+            let p = PathBuf::from(dir_clean);
+            if p.is_absolute() {
+                p
+            } else {
+                let stripped = dir_clean
+                    .strip_prefix("Downloads/")
+                    .or_else(|| dir_clean.strip_prefix("Downloads\\"))
+                    .unwrap_or(dir_clean);
+                user_download_dir.join(stripped)
+            }
         } else {
-            app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee")
+            user_download_dir.join("Devizee")
         }
     } else {
-        app.path().download_dir().unwrap_or_else(|_| PathBuf::from(".")).join("Devizee")
+        user_download_dir.join("Devizee")
     };
 
     if let Some(ref sub) = subfolder {
@@ -398,8 +474,31 @@ async fn start_download(
         }
     }
     if !download_dir.exists() {
-        let _ = std::fs::create_dir_all(&download_dir);
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            eprintln!("[Devizee] Failed to create download directory {:?}: {}", download_dir, e);
+        }
     }
+
+    // Priority 9: Optional separate temp/part directory
+    let resolved_temp_dir = if let Some(ref tdir) = temp_dir {
+        let tdir_clean = tdir.trim();
+        if !tdir_clean.is_empty() {
+            let tp = PathBuf::from(tdir_clean);
+            let final_tp = if tp.is_absolute() {
+                tp
+            } else {
+                user_download_dir.join(tdir_clean)
+            };
+            if !final_tp.exists() {
+                let _ = std::fs::create_dir_all(&final_tp);
+            }
+            Some(final_tp)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let out_template = download_dir.join("%(title)s [%(id)s].%(ext)s");
     let out_template_str = out_template.to_string_lossy().to_string();
@@ -419,17 +518,24 @@ async fn start_download(
         date_added: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
         hidden: false,
         file_size: None,
+        error_code: None,
+        error_message: None,
     };
     if let Some(state) = app.try_state::<AppState>() {
         let conn = state.db_conn.lock().unwrap();
         let _ = db::insert_download(&conn, &record);
     }
 
+    let download_dir_clone = download_dir.clone();
+    let url_clone = url.clone();
+
     std::thread::spawn(move || {
         let mut cmd = Command::new(&yt_dlp_path);
         let progress_template = "DEVIZEE_PROGRESS:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s";
 
+        cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.args([
+            "--encoding", "utf-8",
             "--newline",
             "--progress-template", progress_template,
             "-o", &out_template_str,
@@ -440,8 +546,35 @@ async fn start_download(
             "--compat-options", "no-youtube-unavailable-videos",
         ]);
 
+        // Priority 9: Stage temp/.part files into separate temp folder if configured
+        if let Some(ref tp) = resolved_temp_dir {
+            cmd.args(["-P", &format!("temp:{}", tp.to_string_lossy())]);
+        }
+
         if is_audio_only {
-            cmd.args(["-x", "--audio-format", &ext, "--audio-quality", "0", "--embed-metadata", "--embed-thumbnail"]);
+            // Priority 7: Audio Remux Optimization (-c copy where stream already matches container)
+            let audio_selector = if ext == "m4a" || ext == "aac" {
+                "ba[ext=m4a]/ba[acodec^=mp4a]/ba/b"
+            } else if ext == "opus" || ext == "webm" {
+                "ba[ext=webm]/ba[acodec^=opus]/ba/b"
+            } else {
+                "ba/b"
+            };
+
+            let effective_fmt = if format_id.contains("bestaudio") || format_id.is_empty() {
+                audio_selector
+            } else {
+                &format_id
+            };
+
+            cmd.args([
+                "-f", effective_fmt,
+                "-x",
+                "--audio-format", &ext,
+                "--audio-quality", "0",
+                "--embed-metadata",
+                "--embed-thumbnail",
+            ]);
         } else {
             cmd.args(["-f", &format_id, "--merge-output-format", &ext]);
         }
@@ -481,14 +614,14 @@ async fn start_download(
             }
         }
 
-        cmd.arg(&url);
+        cmd.arg(&url_clone);
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000);
 
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped()); // Restore piped, but we will drain it
+        cmd.stderr(Stdio::piped());
 
 #[cfg(target_os = "windows")]
 static GLOBAL_JOB_OBJECT: std::sync::OnceLock<windows_sys::Win32::Foundation::HANDLE> = std::sync::OnceLock::new();
@@ -533,13 +666,15 @@ fn assign_child_to_job(child: &std::process::Child) {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                let err_str = e.to_string();
+                log_download_error(&app_clone, &task_id_clone, &url_clone, "spawn_failed", &err_str);
                 let _ = app_clone.emit("download-progress", DownloadProgressPayload {
                     task_id: task_id_clone.clone(), percent: 0.0, speed: "0 B/s".to_string(), eta: "--".to_string(),
-                    status: DownloadStatus::Error, error_code: Some("spawn_failed".to_string()), error: Some(e.to_string()), file_path: None,
+                    status: DownloadStatus::Error, error_code: Some("spawn_failed".to_string()), error: Some(err_str.clone()), file_path: None,
                 });
                 if let Some(state) = app_clone.try_state::<AppState>() {
                     let conn = state.db_conn.lock().unwrap();
-                    let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Error, 0.0, None);
+                    let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Error, 0.0, None, Some("spawn_failed"), Some(&err_str));
                 }
                 return;
             }
@@ -553,22 +688,33 @@ fn assign_child_to_job(child: &std::process::Child) {
             status: DownloadStatus::Starting, error_code: None, error: None, file_path: None,
         });
 
-        // Drain stderr concurrently to prevent deadlock
+        // Drain stderr concurrently to prevent deadlock with lossy UTF-8 reading
         let stderr = child.stderr.take().unwrap();
         let error_logs = Arc::new(Mutex::new(Vec::new()));
         let error_logs_clone = error_logs.clone();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().flatten() {
-                let mut logs = error_logs_clone.lock().unwrap();
-                logs.push(line);
+            let mut reader = BufReader::new(stderr);
+            let mut buf = Vec::new();
+            while let Ok(n) = reader.read_until(b'\n', &mut buf) {
+                if n == 0 { break; }
+                let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                buf.clear();
+                if !line.is_empty() {
+                    let mut logs = error_logs_clone.lock().unwrap();
+                    logs.push(line);
+                }
             }
         });
 
         let mut final_file_path = None;
         if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            while let Ok(n) = reader.read_until(b'\n', &mut buf) {
+                if n == 0 { break; }
+                let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                buf.clear();
+
                 if line.contains("DEVIZEE_PROGRESS:") {
                     let parts_str = line.replace("DEVIZEE_PROGRESS:", "");
                     let parts: Vec<&str> = parts_str.split('|').collect();
@@ -585,18 +731,27 @@ fn assign_child_to_job(child: &std::process::Child) {
                         });
                         if let Some(state) = app_clone.try_state::<AppState>() {
                             let conn = state.db_conn.lock().unwrap();
-                            let _ = db::update_download_status(&conn, &task_id_clone, &status, percent, None);
+                            let _ = db::update_download_status(&conn, &task_id_clone, &status, percent, None, None, None);
                         }
                     }
-                } else if line.contains("Destination:") {
-                    let fp = line.replace("[download] Destination:", "").trim().to_string();
-                    final_file_path = Some(fp);
-                } else if line.contains("has already been downloaded") {
-                    let fp = line.replace("[download]", "").replace("has already been downloaded", "").trim().to_string();
-                    final_file_path = Some(fp);
+                } else if let Some(idx) = line.find("Destination:") {
+                    let fp = line[idx + "Destination:".len()..].trim().trim_matches('"').to_string();
+                    if !fp.is_empty() {
+                        final_file_path = Some(fp);
+                    }
                 } else if line.contains("Merging formats into") {
-                    let fp = line.replace("[Merger] Merging formats into", "").trim().trim_matches('"').to_string();
-                    final_file_path = Some(fp);
+                    if let Some(idx) = line.find("Merging formats into") {
+                        let fp = line[idx + "Merging formats into".len()..].trim().trim_matches('"').to_string();
+                        if !fp.is_empty() {
+                            final_file_path = Some(fp);
+                        }
+                    }
+                } else if line.contains("has already been downloaded") {
+                    let cleaned = line.replace("[download]", "").replace("has already been downloaded", "");
+                    let fp = cleaned.trim().trim_matches('"').to_string();
+                    if !fp.is_empty() {
+                        final_file_path = Some(fp);
+                    }
                 }
             }
         }
@@ -604,6 +759,34 @@ fn assign_child_to_job(child: &std::process::Child) {
         let status = child.wait().unwrap();
         
         if status.success() {
+            // Check if final_file_path exists; if not, check download_dir
+            if let Some(ref fp) = final_file_path {
+                if !std::path::Path::new(fp).exists() {
+                    if let Ok(entries) = std::fs::read_dir(&download_dir_clone) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_file() {
+                                if let Some(ext_os) = p.extension() {
+                                    let ext_str = ext_os.to_string_lossy();
+                                    if ext_str != "part" && ext_str != "ytdl" {
+                                        if let Ok(meta) = p.metadata() {
+                                            if let Ok(mtime) = meta.modified() {
+                                                if let Ok(elapsed) = mtime.elapsed() {
+                                                    if elapsed.as_secs() < 30 {
+                                                        final_file_path = Some(p.to_string_lossy().to_string());
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Antivirus scanning if requested
             #[cfg(target_os = "windows")]
             if scan_antivirus.unwrap_or(false) {
@@ -624,17 +807,20 @@ fn assign_child_to_job(child: &std::process::Child) {
             });
             if let Some(state) = app_clone.try_state::<AppState>() {
                 let conn = state.db_conn.lock().unwrap();
-                let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Completed, 100.0, final_file_path.as_deref());
+                let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Completed, 100.0, final_file_path.as_deref(), None, None);
             }
         } else {
             let logs = error_logs.lock().unwrap().join("\n");
+            let error_code = categorize_error(&logs);
+            log_download_error(&app_clone, &task_id_clone, &url_clone, error_code, &logs);
+
             let _ = app_clone.emit("download-progress", DownloadProgressPayload {
                 task_id: task_id_clone.clone(), percent: 0.0, speed: "".to_string(), eta: "".to_string(),
-                status: DownloadStatus::Error, error_code: Some("unknown".to_string()), error: Some(logs), file_path: None,
+                status: DownloadStatus::Error, error_code: Some(error_code.to_string()), error: Some(logs.clone()), file_path: None,
             });
             if let Some(state) = app_clone.try_state::<AppState>() {
                 let conn = state.db_conn.lock().unwrap();
-                let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Error, 0.0, None);
+                let _ = db::update_download_status(&conn, &task_id_clone, &DownloadStatus::Error, 0.0, None, Some(error_code), Some(&logs));
             }
         }
     });
@@ -1055,7 +1241,7 @@ fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>,
                 let p = std::path::Path::new(path);
                 if !p.exists() {
                     record.status = DownloadStatus::Missing;
-                    let _ = db::update_download_status(&conn, &record.id, &DownloadStatus::Missing, record.percent, Some(path));
+                    let _ = db::update_download_status(&conn, &record.id, &DownloadStatus::Missing, record.percent, Some(path), None, None);
                 } else if let Ok(meta) = std::fs::metadata(p) {
                     record.file_size = Some(meta.len());
                 }
