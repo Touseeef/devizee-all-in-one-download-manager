@@ -1,4 +1,3 @@
-// src/components/common/WaveformVisualizer.tsx
 import { useEffect, useRef } from "react";
 import { globalAudioState, analysers } from "../../lib/audioContext";
 
@@ -11,21 +10,35 @@ export function WaveformVisualizer({
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    // Attach analyser once per media element
+    // Attach analyser ONLY for same-origin sources (blob:, data:, same origin).
+    // Cross-origin sources (asset://, external http) cannot be decoded into
+    // an AudioContext — attaching a MediaElementSource to them reroutes the
+    // element's output through a graph that produces zeroes, silencing it.
     useEffect(() => {
         if (!mediaElement) return;
 
-        if (!globalAudioState.ctx) {
-            try {
-                const AudioContextClass =
-                    window.AudioContext || (window as any).webkitAudioContext;
-                if (AudioContextClass) globalAudioState.ctx = new AudioContextClass();
-            } catch (e) {
-                console.warn("AudioContext init error:", e);
-            }
-        }
+        const tryAttach = () => {
+            if (analysers.has(mediaElement)) return;
 
-        if (globalAudioState.ctx && !analysers.has(mediaElement)) {
+            const src = mediaElement.src || "";
+            const isSafe =
+                src.startsWith("blob:") ||
+                src.startsWith("data:") ||
+                src.startsWith(window.location.origin);
+            if (!isSafe) return;
+
+            if (!globalAudioState.ctx) {
+                try {
+                    const AudioContextClass =
+                        window.AudioContext || (window as any).webkitAudioContext;
+                    if (AudioContextClass) globalAudioState.ctx = new AudioContextClass();
+                } catch (e) {
+                    console.warn("AudioContext init error:", e);
+                    return;
+                }
+            }
+            if (!globalAudioState.ctx) return;
+
             try {
                 const analyser = globalAudioState.ctx.createAnalyser();
                 analyser.fftSize = 512;
@@ -37,7 +50,16 @@ export function WaveformVisualizer({
             } catch (e) {
                 console.warn("Analyser attach bypassed:", e);
             }
-        }
+        };
+
+        tryAttach();
+        mediaElement.addEventListener("loadstart", tryAttach);
+        mediaElement.addEventListener("loadedmetadata", tryAttach);
+
+        return () => {
+            mediaElement.removeEventListener("loadstart", tryAttach);
+            mediaElement.removeEventListener("loadedmetadata", tryAttach);
+        };
     }, [mediaElement]);
 
     useEffect(() => {
@@ -62,7 +84,7 @@ export function WaveformVisualizer({
         const dataArray = analyser ? new Uint8Array(analyser.fftSize) : null;
 
         let reqId = 0;
-        let t0 = performance.now();
+        const t0 = performance.now();
 
         const drawFrame = () => {
             reqId = requestAnimationFrame(drawFrame);
@@ -77,7 +99,6 @@ export function WaveformVisualizer({
             if (isPlaying && analyser && dataArray) {
                 analyser.getByteTimeDomainData(dataArray);
 
-                // Detect silence — if everything hovers at 128, blend in procedural wave
                 let energy = 0;
                 for (let i = 0; i < dataArray.length; i++) {
                     energy += Math.abs(dataArray[i] - 128);
@@ -87,7 +108,7 @@ export function WaveformVisualizer({
                 const step = Math.max(1, Math.floor(dataArray.length / W));
                 for (let x = 0; x < W; x++) {
                     const idx = Math.min(dataArray.length - 1, x * step);
-                    const v = (dataArray[idx] - 128) / 128; // -1..1
+                    const v = (dataArray[idx] - 128) / 128;
                     const wobble = silent
                         ? Math.sin((x + t * 0.18) * 0.28) * 0.35 +
                         Math.sin((x + t * 0.09) * 0.61) * 0.22
@@ -97,7 +118,8 @@ export function WaveformVisualizer({
                     else ctx.lineTo(x, y);
                 }
             } else {
-                // No analyser or paused — slow procedural wave so it's never dead
+                // Procedural fallback — used when no analyser is attached
+                // (cross-origin audio, video iframe, paused state)
                 for (let x = 0; x < W; x++) {
                     const y =
                         MID +

@@ -63,7 +63,7 @@ export function SettingsTab({
         <div className="max-w-3xl mx-auto space-y-6 pb-8 animate-in fade-in duration-150">
             {/* General Settings */}
             <SettingsSection title={t("settings_general")} icon={<Sliders size={16} />}>
-                <SettingRow title={t("settings_theme")} desc="Choose from 5 custom visual themes">
+                <SettingRow title={t("settings_theme")} desc="Choose from 6 custom visual themes">
                     <ThemeDropdown currentTheme={theme} onSelectTheme={handleThemeChange} />
                 </SettingRow>
 
@@ -540,6 +540,25 @@ export function SettingsTab({
 
             {/* Advanced & Engine */}
             <SettingsSection title={t("settings_advanced")} icon={<Cpu size={16} />}>
+                <SettingRow
+                    title="YouTube Cookies from Browser"
+                    desc="Uses your browser's login to access age-restricted and bot-detected videos. Requires the browser to be installed on this PC and logged into YouTube."
+                >
+                    <select
+                        value={settings.cookiesFromBrowser || "none"}
+                        onChange={(e) => updateSetting("cookiesFromBrowser", e.target.value)}
+                        className="bg-surface-2 border border-border-subtle rounded-md px-3 py-1.5 text-caption font-semibold outline-none text-primary cursor-pointer"
+                    >
+                        <option value="none">Disabled (default)</option>
+                        <option value="chrome">Chrome</option>
+                        <option value="edge">Edge</option>
+                        <option value="firefox">Firefox</option>
+                        <option value="brave">Brave</option>
+                        <option value="opera">Opera</option>
+                        <option value="vivaldi">Vivaldi</option>
+                    </select>
+                </SettingRow>
+
                 <SettingRow title={t("settings_custom_flags")} desc={t("settings_custom_flags_desc")}>
                     <input
                         type="text"

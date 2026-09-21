@@ -42,6 +42,7 @@ import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { AppShell } from "./components/layout/AppShell";
 import { Sidebar } from "./components/layout/Sidebar";
 import { ClipboardHud } from "./components/hud/ClipboardHud";
+import { MiniPlayerBar } from "./components/downloads/MiniPlayerBar";
 
 
 export default function App() {
@@ -202,7 +203,10 @@ export default function App() {
 
   // Audio Hub state (url/format now live inside AudioHubTab)
   const [activeAudioPlaying, setActiveAudioPlaying] = useState<DownloadRecord | null>(null);
-
+  const [audioQueue, setAudioQueue] = useState<DownloadRecord[]>([]);
+  const [audioQueuePos, setAudioQueuePos] = useState(0);
+  const [audioShuffle, setAudioShuffle] = useState(false);
+  const [audioRepeat, setAudioRepeat] = useState<"off" | "all" | "one">("off");
   // History, Queue Filtering & Sorting
   const [history, setHistory] = useState<DownloadRecord[]>([]);
   const [activitySearchQuery, setActivitySearchQuery] = useState("");
@@ -277,6 +281,8 @@ export default function App() {
       // Security
       scanAntivirus: true,
       httpsWarnings: true,
+      // yt-dlp auth — helps with age-restricted / bot-detected videos
+      cookiesFromBrowser: "none",
       // Sounds & Notifications
       playSound: true,
       showNotifications: true,
@@ -388,33 +394,143 @@ export default function App() {
     sendIframeCommand("pauseVideo");
   };
 
+  // Actually load a track into the audio element. Used by queue navigation.
+  const playAudioItemNow = (item: DownloadRecord) => {
+    if (!item.file_path || !audioRef.current) {
+      console.warn("[AudioHub] Skipping play — no file_path or audio element", {
+        hasFilePath: !!item.file_path,
+        hasAudioRef: !!audioRef.current,
+        title: item.title,
+      });
+      return;
+    }
+    if (videoElementRef.current) videoElementRef.current.pause();
+    sendIframeCommand("pauseVideo");
+    setPreviewingId(null);
+    setActiveAudioPlaying(item);
+    setNowPlaying({ type: "audio", id: item.id });
+
+    const src = convertFileSrc(item.file_path);
+    console.log("[AudioHub] Loading:", src);
+
+    audioRef.current.src = src;
+    audioRef.current.volume = isMuted ? 0 : volume;
+
+    audioRef.current
+      .play()
+      .then(() => {
+        console.log("[AudioHub] Playback started");
+        setisAudioElementPlaying(true);
+      })
+      .catch((err) => console.error("[AudioHub] Play failed:", err));
+  };
+  // Click handler for a library row. Builds a fresh queue and starts playback.
   const playAudioFromLibrary = (item: DownloadRecord) => {
     unlockAudioContext();
-    if (activeAudioPlaying?.id === item.id) {
-      if (isAudioElementPlaying) {
-        audioRef.current?.pause();
-        setisAudioElementPlaying(false);
-        setNowPlaying({ type: "none", id: null });
-      } else {
-        audioRef.current?.play();
-        setisAudioElementPlaying(true);
-        setNowPlaying({ type: "audio", id: item.id });
-      }
-    } else if (item.file_path) {
-      if (videoElementRef.current) videoElementRef.current.pause();
-      sendIframeCommand("pauseVideo");
-      // Do NOT call setActiveVideoPlaying(false) — preserve video position.
-      setPreviewingId(null);
+
+    // Toggle: same track + playing → pause
+    if (activeAudioPlaying?.id === item.id && isAudioElementPlaying) {
+      audioRef.current?.pause();
       setisAudioElementPlaying(false);
-      setActiveAudioPlaying(item);
-      setNowPlaying({ type: "audio", id: item.id });
-      if (audioRef.current) {
-        audioRef.current.src = convertFileSrc(item.file_path);
-        audioRef.current.volume = isMuted ? 0 : volume;
-        audioRef.current.play();
-        setisAudioElementPlaying(true);
+      return;
+    }
+
+    // Toggle: same track + paused → resume
+    if (activeAudioPlaying?.id === item.id && audioRef.current) {
+      audioRef.current
+        .play()
+        .then(() => setisAudioElementPlaying(true))
+        .catch(() => { });
+      return;
+    }
+
+    if (!item.file_path) return;
+
+    const lib = history.filter(
+      (h) => h.status === "completed" && isAudioFormat(h.format)
+    );
+    if (lib.length === 0) return;
+
+    let ordered = [...lib];
+    if (audioShuffle) {
+      for (let i = ordered.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
       }
     }
+
+    const startIdx = ordered.findIndex((x) => x.id === item.id);
+    setAudioQueue(ordered);
+    setAudioQueuePos(startIdx >= 0 ? startIdx : 0);
+    playAudioItemNow(item);
+  };
+
+  // Transport controls
+  const toggleAudioPlayPause = () => {
+    if (!audioRef.current) return;
+    if (isAudioElementPlaying) {
+      audioRef.current.pause();
+      setisAudioElementPlaying(false);
+    } else {
+      audioRef.current
+        .play()
+        .then(() => setisAudioElementPlaying(true))
+        .catch(() => { });
+    }
+  };
+
+  const audioNext = () => {
+    if (audioQueue.length === 0) return;
+    const nextPos = audioQueuePos + 1;
+    if (nextPos < audioQueue.length) {
+      setAudioQueuePos(nextPos);
+      playAudioItemNow(audioQueue[nextPos]);
+    } else if (audioRepeat === "all") {
+      setAudioQueuePos(0);
+      playAudioItemNow(audioQueue[0]);
+    }
+  };
+
+  const audioPrev = () => {
+    if (audioQueue.length === 0 || !audioRef.current) return;
+    // Restart current track if past 3 seconds
+    if (audioRef.current.currentTime > 3) {
+      audioRef.current.currentTime = 0;
+      return;
+    }
+    const prevPos = audioQueuePos - 1;
+    if (prevPos >= 0) {
+      setAudioQueuePos(prevPos);
+      playAudioItemNow(audioQueue[prevPos]);
+    } else if (audioRepeat === "all") {
+      const lastPos = audioQueue.length - 1;
+      setAudioQueuePos(lastPos);
+      playAudioItemNow(audioQueue[lastPos]);
+    }
+  };
+
+  const toggleAudioShuffle = () => {
+    const nextShuffle = !audioShuffle;
+    setAudioShuffle(nextShuffle);
+
+    // Rebuild remaining queue to reflect new shuffle setting
+    if (audioQueue.length > 0) {
+      const played = audioQueue.slice(0, audioQueuePos + 1);
+      const remaining = audioQueue.slice(audioQueuePos + 1);
+      if (nextShuffle) {
+        for (let i = remaining.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+        }
+      }
+      setAudioQueue([...played, ...remaining]);
+    }
+  };
+
+  const cycleAudioRepeat = () => {
+    setAudioRepeat((prev) =>
+      prev === "off" ? "all" : prev === "all" ? "one" : "off"
+    );
   };
 
   // Keyboard Shortcuts Handler
@@ -572,6 +688,21 @@ export default function App() {
   // Clipboard Radar Logic
   const lastClipboard = useRef<string>("");
 
+  // One-time migration: fix any legacy double-nested file paths
+  // ("Downloads/Devizee/Downloads/Devizee/...") left over from before
+  // the resolve_output_dir fix. Safe to run every startup — it just
+  // rewrites matching paths and returns 0 for already-fixed records.
+  useEffect(() => {
+    invoke<number>("fix_legacy_paths")
+      .then((n) => {
+        if (n > 0) {
+          console.log(`[Migration] Fixed ${n} legacy paths`);
+          loadHistory();
+        }
+      })
+      .catch((e) => console.warn("[Migration] Skipped:", e));
+  }, []);
+
   useEffect(() => {
     // HUD window listens for its own data inside ClipboardHud.
     // This effect only runs in the main app window.
@@ -587,7 +718,7 @@ export default function App() {
           (text.includes("youtube.com") || text.includes("youtu.be"))
         ) {
           lastClipboard.current = text;
-          const info: VideoInfo = await invoke("fetch_video_info", { url: text });
+          const info: VideoInfo = await invoke("fetch_video_info", { url: text, cookiesFromBrowser: settings.cookiesFromBrowser });
           let hudWin = await WebviewWindow.getByLabel("hud");
           if (!hudWin) {
             hudWin = new WebviewWindow("hud", {
@@ -739,8 +870,7 @@ export default function App() {
         formats: [],
       });
       // Fetch full formats in background
-      invoke<VideoInfo>("fetch_video_info", { url: targetVideo.url })
-        .then(info => setVideoInfo(info))
+      invoke<VideoInfo>("fetch_video_info", { url: targetVideo.url, cookiesFromBrowser: settings.cookiesFromBrowser }).then(info => setVideoInfo(info))
         .catch(err => console.error(err));
     }
 
@@ -758,8 +888,7 @@ export default function App() {
     }
 
     try {
-      const streamUrl = await invoke<string>("get_video_stream_url", { url: targetVideo.url });
-      videoStreamCache.current.set(targetVideo.id, streamUrl);
+      const streamUrl = await invoke<string>("get_video_stream_url", { url: targetVideo.url, cookiesFromBrowser: settings.cookiesFromBrowser }); videoStreamCache.current.set(targetVideo.id, streamUrl);
       setVideoStreamUrl(streamUrl);
     } catch (err) {
       console.error("Video stream extraction fallback:", err);
@@ -782,7 +911,9 @@ export default function App() {
   const toggleAudioPreview = async (targetUrl: string, songId: string) => {
     unlockAudioContext();
     if (!audioRef.current) return;
-
+    // Clear queue — previews are one-shot, they shouldn't auto-advance
+    setAudioQueue([]);
+    setAudioQueuePos(0);
     // FIX: yt-dlp defaults to extracting the whole playlist if the URL contains playlist parameters
     // Strip them so we strictly preview the individual song
     let cleanUrl = targetUrl;
@@ -841,7 +972,7 @@ export default function App() {
     setIsLoadingAudioId(songId);
 
     try {
-      const bytes: number[] = await invoke("fetch_audio_bytes", { url: cleanUrl });
+      const bytes: number[] = await invoke("fetch_audio_bytes", { url: cleanUrl, cookiesFromBrowser: settings.cookiesFromBrowser });
       // Guard: if backend returned a tiny payload, it's almost certainly an HTTP
       // error page (403, 404, etc.) wrapped as bytes, not real audio.
       if (!bytes || bytes.length < 4096) {
@@ -876,7 +1007,41 @@ export default function App() {
   const handleAudioEnded = () => {
     setisAudioElementPlaying(false);
     setPreviewTime(0);
+
+    // Preview (no queue) — just stop
+    if (audioQueue.length === 0) {
+      setNowPlaying({ type: "none", id: null });
+      setActiveAudioPlaying(null);
+      return;
+    }
+
+    // Repeat one — replay current track
+    if (audioRepeat === "one" && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current
+        .play()
+        .then(() => setisAudioElementPlaying(true))
+        .catch(() => { });
+      return;
+    }
+
+    // Advance to next track
+    const nextPos = audioQueuePos + 1;
+    if (nextPos < audioQueue.length) {
+      setAudioQueuePos(nextPos);
+      playAudioItemNow(audioQueue[nextPos]);
+      return;
+    }
+
+    // End of queue — wrap or stop
+    if (audioRepeat === "all" && audioQueue.length > 0) {
+      setAudioQueuePos(0);
+      playAudioItemNow(audioQueue[0]);
+      return;
+    }
+
     setNowPlaying({ type: "none", id: null });
+    setActiveAudioPlaying(null);
   };
 
   const handleSeek = (seconds: number) => {
@@ -914,6 +1079,19 @@ export default function App() {
     const clean = rawInput.trim();
     if (!clean) return;
 
+    // Stop any playing audio or video before analyzing a new URL
+    if (audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+    }
+    if (videoElementRef.current) videoElementRef.current.pause();
+    sendIframeCommand("pauseVideo");
+    setisAudioElementPlaying(false);
+    setPreviewingId(null);
+    setActiveAudioPlaying(null);
+    setAudioQueue([]);
+    setAudioQueuePos(0);
+    setNowPlaying({ type: "none", id: null });
+
     // Check if input is a direct URL or a keyword search for YouTube
     const isUrl = /^https?:\/\//i.test(clean) ||
       clean.startsWith("www.") ||
@@ -932,8 +1110,7 @@ export default function App() {
       setIsSearchingYoutube(true);
       setIsFetching(true);
       try {
-        const results = await invoke<PlaylistEntry[]>("search_youtube", { query: clean });
-        setSearchResults(results);
+        const results = await invoke<PlaylistEntry[]>("search_youtube", { query: clean, cookiesFromBrowser: settings.cookiesFromBrowser }); setSearchResults(results);
         if (!results || results.length === 0) {
           setFetchError(`No YouTube results found for "${clean}".`);
         }
@@ -987,7 +1164,7 @@ export default function App() {
           ? clean
           : `https://www.youtube.com/playlist?list=${listId}`;
 
-        const plPromise = invoke<PlaylistInfo>("fetch_playlist_info", { url: plUrl })
+        const plPromise = invoke<PlaylistInfo>("fetch_playlist_info", { url: plUrl, cookiesFromBrowser: settings.cookiesFromBrowser })
           .then((plInfo) => {
             setPlaylistInfo(plInfo);
             setShowPlaylistSection(true);
@@ -1007,8 +1184,7 @@ export default function App() {
 
         if (videoId) {
           const videoClean = `https://www.youtube.com/watch?v=${videoId}`;
-          const info = await invoke<VideoInfo>("fetch_video_info", { url: videoClean });
-          setVideoInfo(info);
+          const info = await invoke<VideoInfo>("fetch_video_info", { url: videoClean, cookiesFromBrowser: settings.cookiesFromBrowser }); setVideoInfo(info);
           if (info.duration_string && info.duration_string !== "--:--") {
             setTrimEnd(info.duration_string);
           }
@@ -1018,7 +1194,7 @@ export default function App() {
         }
         await plPromise;
       } else if (videoId) {
-        const info = await invoke<VideoInfo>("fetch_video_info", { url: clean });
+        const info = await invoke<VideoInfo>("fetch_video_info", { url: clean, cookiesFromBrowser: settings.cookiesFromBrowser });
         setVideoInfo(info);
         if (info.duration_string && info.duration_string !== "--:--") {
           setTrimEnd(info.duration_string);
@@ -1027,8 +1203,7 @@ export default function App() {
           handlePlayVideo(info);
         }
       } else {
-        const info = await invoke<VideoInfo>("fetch_video_info", { url: clean });
-        setVideoInfo(info);
+        const info = await invoke<VideoInfo>("fetch_video_info", { url: clean, cookiesFromBrowser: settings.cookiesFromBrowser }); setVideoInfo(info);
         if (info.duration_string && info.duration_string !== "--:--") {
           setTrimEnd(info.duration_string);
         }
@@ -1072,7 +1247,7 @@ export default function App() {
         if (!line) break;
 
         try {
-          const info = await invoke<VideoInfo>("fetch_video_info", { url: line });
+          const info = await invoke<VideoInfo>("fetch_video_info", { url: line, cookiesFromBrowser: settings.cookiesFromBrowser });
           const presetLabel =
             batchPreset === "1080p"
               ? "1080p Video"
@@ -1200,6 +1375,7 @@ export default function App() {
         customFlags: settings.customFlags ? settings.customFlags : null,
         scanAntivirus: settings.scanAntivirus,
         downloadSections: downloadSectionsArg,
+        cookiesFromBrowser: settings.cookiesFromBrowser,
         duplicateAction: duplicateAction || null,
       });
     } catch (e: any) {
@@ -1411,7 +1587,14 @@ export default function App() {
         <Sidebar
           collapsed={collapsed}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={(tab) => {
+            if (tab === "downloads") {
+              setQueueFilter("all");
+              setShowPreviews(true);
+              setActivitySearchQuery("");
+            }
+            setActiveTab(tab);
+          }}
           activeCount={activeCount}
           queuedCount={queuedCount}
           nowPlaying={nowPlaying}
@@ -1472,39 +1655,56 @@ export default function App() {
                 count={activeCount}
                 items={cardItems.active}
                 active={queueFilter === "active"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "active" ? "all" : "active")
-                }
+                onClick={() => {
+                  const next = queueFilter === "active" ? "all" : "active";
+                  setQueueFilter(next);
+                  setShowPreviews(next === "all");
+                }}
               />
               <StatCard
                 variant="queued"
                 count={queuedCount}
                 items={cardItems.queued}
                 active={queueFilter === "queued"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "queued" ? "all" : "queued")
-                }
+                onClick={() => {
+                  const next = queueFilter === "queued" ? "all" : "queued";
+                  setQueueFilter(next);
+                  setShowPreviews(next === "all");
+                }}
               />
               <StatCard
                 variant="attention"
                 count={attentionCount}
                 items={cardItems.attention}
                 active={queueFilter === "attention"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "attention" ? "all" : "attention")
-                }
+                onClick={() => {
+                  const next = queueFilter === "attention" ? "all" : "attention";
+                  setQueueFilter(next);
+                  setShowPreviews(next === "all");
+                }}
               />
               <StatCard
                 variant="completed"
                 count={completedCount}
                 items={cardItems.completed}
                 active={queueFilter === "completed"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "completed" ? "all" : "completed")
-                }
+                onClick={() => {
+                  const next = queueFilter === "completed" ? "all" : "completed";
+                  setQueueFilter(next);
+                  setShowPreviews(next === "all");
+                }}
               />
             </div>
-
+            {/* Mini player bar — only shows while audio is playing anywhere in the app */}
+            {activeAudioPlaying && (
+              <MiniPlayerBar
+                track={activeAudioPlaying}
+                isPlaying={isAudioElementPlaying}
+                onPlayPause={toggleAudioPlayPause}
+                onOpenAudioHub={() => setActiveTab("audio")}
+                audioRef={audioRef}
+              />
+            )}
             {fetchError && (
               <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
                 <AlertCircle size={16} className="mt-0.5 shrink-0" />
@@ -1671,6 +1871,17 @@ export default function App() {
             activeAudioPlaying={activeAudioPlaying}
             isAudioElementPlaying={isAudioElementPlaying}
             onPlayItem={playAudioFromLibrary}
+            onPlayPause={toggleAudioPlayPause}
+            onNext={audioNext}
+            onPrev={audioPrev}
+            onSeek={handleSeek}
+            previewTime={previewTime}
+            previewDuration={previewDuration}
+            audioShuffle={audioShuffle}
+            audioRepeat={audioRepeat}
+            onToggleShuffle={toggleAudioShuffle}
+            onCycleRepeat={cycleAudioRepeat}
+            formatSeconds={formatSeconds}
           />
         )}
 

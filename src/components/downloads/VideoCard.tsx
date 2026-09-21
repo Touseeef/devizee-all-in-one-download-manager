@@ -289,21 +289,29 @@ export function VideoCard({
                         </h3>
 
                         <div className="flex items-center gap-2 shrink-0">
-                            {previewingId !== videoInfo.id && (
-                                <button
-                                    type="button"
-                                    onClick={() => toggleAudioPreview(videoInfo.url, videoInfo.id)}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold text-caption shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                    title="Preview audio before downloading"
-                                >
-                                    {isLoadingAudioId === videoInfo.id ? (
-                                        <Loader2 size={13} className="animate-spin" />
-                                    ) : (
-                                        <Play size={13} fill="currentColor" />
-                                    )}
-                                    <span>{t("preview_audio")}</span>
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                onClick={() => toggleAudioPreview(videoInfo.url, videoInfo.id)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold text-caption shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+                                title={
+                                    previewingId === videoInfo.id && isAudioElementPlaying
+                                        ? "Pause audio"
+                                        : "Preview audio before downloading"
+                                }
+                            >
+                                {isLoadingAudioId === videoInfo.id ? (
+                                    <Loader2 size={13} className="animate-spin" />
+                                ) : previewingId === videoInfo.id && isAudioElementPlaying ? (
+                                    <Pause size={13} fill="currentColor" />
+                                ) : (
+                                    <Play size={13} fill="currentColor" />
+                                )}
+                                <span>
+                                    {previewingId === videoInfo.id && isAudioElementPlaying
+                                        ? "Pause"
+                                        : t("preview_audio")}
+                                </span>
+                            </button>
 
                             <button
                                 type="button"
@@ -659,6 +667,12 @@ export function VideoCard({
                                             Download Format
                                         </div>
 
+                                        {/* VIDEO subsection */}
+                                        <div className="text-[11px] font-semibold text-primary/80 flex items-center gap-2">
+                                            <span>Video</span>
+                                            <span className="flex-1 h-px bg-border-subtle" />
+                                        </div>
+
                                         {/* Video pills */}
                                         <div className="flex flex-wrap items-center gap-2">
                                             {videoInfo.video_formats.slice(0, 3).map((f) => {
@@ -671,8 +685,8 @@ export function VideoCard({
                                                         type="button"
                                                         onClick={() => setSelectedFormat(f)}
                                                         className={`px-3 py-1.5 rounded-md text-caption font-medium transition-all active:scale-[0.98] border ${isSelected
-                                                                ? "bg-accent text-white border-accent shadow-sm"
-                                                                : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
+                                                            ? "bg-accent text-white border-accent shadow-sm"
+                                                            : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
                                                             }`}
                                                     >
                                                         {f.label}
@@ -699,12 +713,12 @@ export function VideoCard({
                                                         if (f) setSelectedFormat(f);
                                                     }}
                                                     className={`px-2.5 py-1.5 rounded-md text-caption font-medium outline-none cursor-pointer transition-all border ${selectedFormat &&
-                                                            !selectedFormat.is_audio_only &&
-                                                            videoInfo.video_formats
-                                                                .slice(3)
-                                                                .some((x) => x.format_id === selectedFormat.format_id)
-                                                            ? "bg-accent text-white border-accent shadow-sm"
-                                                            : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
+                                                        !selectedFormat.is_audio_only &&
+                                                        videoInfo.video_formats
+                                                            .slice(3)
+                                                            .some((x) => x.format_id === selectedFormat.format_id)
+                                                        ? "bg-accent text-white border-accent shadow-sm"
+                                                        : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
                                                         }`}
                                                 >
                                                     <option value="" disabled>
@@ -719,8 +733,14 @@ export function VideoCard({
                                             )}
                                         </div>
 
+                                        {/* AUDIO subsection */}
+                                        <div className="text-[11px] font-semibold text-primary/80 flex items-center gap-2 pt-2">
+                                            <span>Audio</span>
+                                            <span className="flex-1 h-px bg-border-subtle" />
+                                        </div>
+
                                         {/* Audio pills */}
-                                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                                        <div className="flex flex-wrap items-center gap-2">
                                             {videoInfo.audio_formats.slice(0, 3).map((f) => {
                                                 const isSelected =
                                                     selectedFormat?.format_id === f.format_id &&
@@ -732,8 +752,8 @@ export function VideoCard({
                                                         type="button"
                                                         onClick={() => setSelectedFormat(f)}
                                                         className={`px-3 py-1.5 rounded-md text-caption font-medium transition-all active:scale-[0.98] border ${isSelected
-                                                                ? "bg-accent text-white border-accent shadow-sm"
-                                                                : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
+                                                            ? "bg-accent text-white border-accent shadow-sm"
+                                                            : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
                                                             }`}
                                                     >
                                                         {f.label}
@@ -764,16 +784,16 @@ export function VideoCard({
                                                         if (f) setSelectedFormat(f);
                                                     }}
                                                     className={`px-2.5 py-1.5 rounded-md text-caption font-medium outline-none cursor-pointer transition-all border ${selectedFormat &&
-                                                            selectedFormat.is_audio_only &&
-                                                            videoInfo.audio_formats
-                                                                .slice(3)
-                                                                .some(
-                                                                    (x) =>
-                                                                        x.label === selectedFormat.label &&
-                                                                        x.ext === selectedFormat.ext
-                                                                )
-                                                            ? "bg-accent text-white border-accent shadow-sm"
-                                                            : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
+                                                        selectedFormat.is_audio_only &&
+                                                        videoInfo.audio_formats
+                                                            .slice(3)
+                                                            .some(
+                                                                (x) =>
+                                                                    x.label === selectedFormat.label &&
+                                                                    x.ext === selectedFormat.ext
+                                                            )
+                                                        ? "bg-accent text-white border-accent shadow-sm"
+                                                        : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
                                                         }`}
                                                 >
                                                     <option value="" disabled>
@@ -797,8 +817,8 @@ export function VideoCard({
                                             </div>
                                             <div
                                                 className={`rounded-md px-3 py-2 text-caption font-semibold truncate border ${selectedFormat
-                                                        ? "bg-accent-subtle text-accent border-accent/30"
-                                                        : "bg-surface-1 text-tertiary border-border-subtle"
+                                                    ? "bg-accent-subtle text-accent border-accent/30"
+                                                    : "bg-surface-1 text-tertiary border-border-subtle"
                                                     }`}
                                             >
                                                 {selectedFormat
@@ -816,8 +836,8 @@ export function VideoCard({
                                                 }
                                             }}
                                             className={`w-full px-3 py-2 rounded-md text-caption font-medium transition-all active:scale-[0.98] border ${isTrimming
-                                                    ? "bg-accent text-white border-accent shadow-sm"
-                                                    : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
+                                                ? "bg-accent text-white border-accent shadow-sm"
+                                                : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-2"
                                                 }`}
                                         >
                                             {isTrimming ? "Trimming active" : "Customize Trim"}
