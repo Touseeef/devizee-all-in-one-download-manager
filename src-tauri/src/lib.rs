@@ -1006,70 +1006,76 @@ async fn start_download(
 }
 
 #[tauri::command]
-async fn open_folder(
+async fn resolve_folder_path(
     path: Option<String>,
     base_dir: Option<String>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
-    let default_base = app
-        .path()
-        .download_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Devizee");
-    let fallback_dir = match base_dir {
+) -> Result<String, String> {
+    // Resolve %USERPROFILE%\Downloads without relying on Tauri's download_dir()
+    // (which has been observed to return Documents on some Windows setups).
+    let home_downloads: PathBuf = {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("Downloads"))
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .download_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("HOME")
+                .map(|p| PathBuf::from(p).join("Downloads"))
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .download_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                })
+        }
+    };
+    let default_base = home_downloads.join("Devizee");
+
+    let resolved_base: PathBuf = match base_dir {
         Some(dir) if !dir.trim().is_empty() => {
             let p = PathBuf::from(dir.trim());
             if p.is_absolute() {
                 p
             } else {
-                default_base.join(p)
+                let trimmed = dir
+                    .trim()
+                    .trim_start_matches("Downloads/")
+                    .trim_start_matches("Downloads\\");
+                home_downloads.join(trimmed)
             }
         }
-        _ => default_base,
+        _ => default_base.clone(),
     };
 
-    if !fallback_dir.exists() {
-        let _ = std::fs::create_dir_all(&fallback_dir);
-    }
-
-    let target_path = match path {
+    let target: PathBuf = match path {
         Some(p) if !p.trim().is_empty() => {
-            let pb = PathBuf::from(&p);
+            let pb = PathBuf::from(p.trim());
             if pb.exists() {
                 pb
             } else {
-                fallback_dir.clone()
+                let alt = resolved_base.join(p.trim());
+                if alt.exists() {
+                    alt
+                } else {
+                    resolved_base.clone()
+                }
             }
         }
-        _ => fallback_dir,
+        _ => resolved_base.clone(),
     };
 
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("explorer");
-        if target_path.is_file() {
-            cmd.arg(format!("/select,{}", target_path.to_string_lossy()));
-        } else {
-            cmd.arg(target_path.to_string_lossy().to_string());
-        }
-        cmd.spawn().map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let target = if target_path.is_file() {
-            target_path.parent().unwrap_or(&target_path)
-        } else {
-            &target_path
-        };
-        Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+    if !target.exists() {
+        let _ = std::fs::create_dir_all(&target);
     }
 
-    Ok(())
+    Ok(target.to_string_lossy().to_string())
 }
-
 #[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1444,17 +1450,67 @@ pub fn run() {
             get_audio_stream_url,
             get_video_stream_url,
             start_download,
-            open_folder,
+            resolve_folder_path,
             open_file,
             get_history,
             hide_history_item,
             delete_history_file,
-            set_autostart
+            set_autostart,
+            fetch_audio_bytes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
+#[tauri::command]
+async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+    let yt_dlp_path = get_yt_dlp_path(&app)?;
+    let ffmpeg_path = get_ffmpeg_path(&app);
+
+    let mut cmd = Command::new(&yt_dlp_path);
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.args([
+        "-f",
+        "bestaudio[ext=webm]/bestaudio/best",
+        "-o",
+        "-",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-colors",
+        "--quiet",
+        "--no-part",
+        "--concurrent-fragments",
+        "4",
+    ]);
+    if let Some(ref ff) = ffmpeg_path {
+        cmd.arg("--ffmpeg-location");
+        cmd.arg(ff);
+    }
+    cmd.arg(&url);
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let clean: Vec<&str> = stderr
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(5)
+            .collect();
+        return Err(format!("yt-dlp failed: {}", clean.join(" | ")));
+    }
+
+    if output.stdout.len() < 4096 {
+        return Err(format!(
+            "Audio fetch returned only {} bytes — likely an error page, not real media",
+            output.stdout.len()
+        ));
+    }
+
+    Ok(output.stdout)
+}
 #[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
     let conn = state.db_conn.lock().unwrap();
