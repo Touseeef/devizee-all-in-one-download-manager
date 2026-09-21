@@ -4,11 +4,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  Download,
-  AlertCircle, Loader2,
-  CheckCircle2, Clock,
-} from "lucide-react";
+import { AlertCircle } from "lucide-react";
 
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -31,8 +27,7 @@ import { createTranslator } from "./lib/i18n";
 import { globalAudioState } from "./lib/audioContext";
 
 import { ConfirmDialog } from "./components/common/ConfirmDialog";
-import { StatTile } from "./components/common/StatTile";
-import { ClipboardHud } from "./components/hud/ClipboardHud";
+import { StatCard } from "./components/downloads/StatCard";
 import { SettingsTab } from "./components/settings/SettingsTab";
 import { AudioHubTab } from "./components/audio/AudioHubTab";
 import { UrlInput } from "./components/downloads/UrlInput";
@@ -46,6 +41,7 @@ import type { DuplicateDialogState } from "./components/common/DuplicateDialog";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { AppShell } from "./components/layout/AppShell";
 import { Sidebar } from "./components/layout/Sidebar";
+import { ClipboardHud } from "./components/hud/ClipboardHud";
 
 
 export default function App() {
@@ -210,8 +206,7 @@ export default function App() {
   // History, Queue Filtering & Sorting
   const [history, setHistory] = useState<DownloadRecord[]>([]);
   const [activitySearchQuery, setActivitySearchQuery] = useState("");
-  const [queueFilter, setQueueFilter] = useState<"all" | "video" | "audio" | "active" | "completed" | "attention">("all");
-  const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "size_desc" | "size_asc" | "title" | "progress">("date_desc");
+  const [queueFilter, setQueueFilter] = useState<"all" | "video" | "audio" | "active" | "queued" | "completed" | "attention">("all"); const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "size_desc" | "size_asc" | "title" | "progress">("date_desc");
   const completedBatch = useRef<string[]>([]);
   const errorBatch = useRef<string[]>([]);
   const notificationTimer = useRef<any>(null);
@@ -1374,8 +1369,8 @@ export default function App() {
     if (queueFilter === "all") return true;
     if (queueFilter === "video") return isVideoFormat(item.format);
     if (queueFilter === "audio") return isAudioFormat(item.format);
-    if (queueFilter === "active") return item.status === "downloading" || item.status === "muxing" || item.status === "starting" || item.status === "queued";
-    if (queueFilter === "completed") return item.status === "completed";
+    if (queueFilter === "active") return item.status === "downloading" || item.status === "muxing" || item.status === "starting";
+    if (queueFilter === "queued") return item.status === "queued" || item.status === "fetching_metadata"; if (queueFilter === "completed") return item.status === "completed";
     if (queueFilter === "attention") return item.status === "error" || item.status === "interrupted" || item.status === "missing";
     return true;
   });
@@ -1392,6 +1387,19 @@ export default function App() {
 
   const activeCardTask = activeCardTaskId ? history.find(h => h.id === activeCardTaskId) : null;
 
+  // StatCard mini-lists (top 2 items per state)
+  const cardItems = {
+    active: history.filter(
+      h => h.status === "downloading" || h.status === "muxing" || h.status === "starting"
+    ),
+    queued: history.filter(
+      h => h.status === "queued" || h.status === "fetching_metadata"
+    ),
+    attention: history.filter(
+      h => h.status === "error" || h.status === "interrupted"
+    ),
+    completed: history.filter(h => h.status === "completed"),
+  };
   if (isHud) {
     return <ClipboardHud settings={settings} />;
   }
@@ -1442,48 +1450,7 @@ export default function App() {
           <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
 
             {/* StatTiles — 5 Purposeful Gradient Highlight Tiles (Clickable to Filter) */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
-              <StatTile
-                label="Home"
-                count={history.length}
-                sub="Dashboard View"
-                gradient="linear-gradient(135deg, #475569 0%, #334155 100%)"
-                icon={<Download size={17} />}
-                onClick={() => { setQueueFilter("all"); setShowPreviews(true); setActivitySearchQuery(""); }}
-              />
-              <StatTile
-                label={t("tile_active")}
-                count={activeCount}
-                sub={t("tile_active_sub")}
-                gradient="var(--gradient-tile-primary)"
-                icon={<Loader2 size={17} className={activeCount > 0 ? "animate-spin" : ""} />}
-                onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
-              />
-              <StatTile
-                label={t("tile_queued")}
-                count={queuedCount}
-                sub={t("tile_queued_sub")}
-                gradient="var(--gradient-tile-blue)"
-                icon={<Clock size={17} />}
-                onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
-              />
-              <StatTile
-                label={t("tile_attention")}
-                count={attentionCount}
-                sub={t("tile_attention_sub")}
-                gradient="var(--gradient-tile-amber)"
-                icon={<AlertCircle size={17} />}
-                onClick={() => { setQueueFilter("attention"); setShowPreviews(false); }}
-              />
-              <StatTile
-                label={t("tile_completed")}
-                count={completedCount}
-                sub={t("tile_completed_sub")}
-                gradient="var(--gradient-tile-violet)"
-                icon={<CheckCircle2 size={17} />}
-                onClick={() => { setQueueFilter("completed"); setShowPreviews(false); }}
-              />
-            </div>
+
 
             {/* URL Input Form */}
             <UrlInput
@@ -1498,6 +1465,45 @@ export default function App() {
               labelAnalyze={t("btn_analyze")}
               labelAnalyzing={t("analyzing")}
             />
+            {/* StatCards — 4 state tiles (click to filter) */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard
+                variant="active"
+                count={activeCount}
+                items={cardItems.active}
+                active={queueFilter === "active"}
+                onClick={() =>
+                  setQueueFilter(queueFilter === "active" ? "all" : "active")
+                }
+              />
+              <StatCard
+                variant="queued"
+                count={queuedCount}
+                items={cardItems.queued}
+                active={queueFilter === "queued"}
+                onClick={() =>
+                  setQueueFilter(queueFilter === "queued" ? "all" : "queued")
+                }
+              />
+              <StatCard
+                variant="attention"
+                count={attentionCount}
+                items={cardItems.attention}
+                active={queueFilter === "attention"}
+                onClick={() =>
+                  setQueueFilter(queueFilter === "attention" ? "all" : "attention")
+                }
+              />
+              <StatCard
+                variant="completed"
+                count={completedCount}
+                items={cardItems.completed}
+                active={queueFilter === "completed"}
+                onClick={() =>
+                  setQueueFilter(queueFilter === "completed" ? "all" : "completed")
+                }
+              />
+            </div>
 
             {fetchError && (
               <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">

@@ -6,16 +6,18 @@ import {
     Moon,
     Shield,
     Sliders,
+    Sparkles,
     Sun,
 } from "lucide-react";
 
 export const THEME_OPTIONS = [
-    { id: "light", label: "Light Mode", icon: Sun, desc: "Clean, high-visibility daylight surfaces" },
-    { id: "dark", label: "Dark Mode", icon: Moon, desc: "Default slate-navy workstation theme" },
-    { id: "oled", label: "OLED Pure Black", icon: Shield, desc: "True black #000000 for OLED power saving" },
-    { id: "sunset", label: "Sunset Warm", icon: Sliders, desc: "Warm ember surfaces with amber accents" },
-    { id: "frost", label: "Frost Indigo", icon: FastForward, desc: "Cool midnight surfaces with indigo accents" },
-    { id: "high-contrast", label: "High Contrast", icon: Eye, desc: "Ultra-sharp edges with vivid high-visibility accents" },
+    { id: "light", label: "Light Mode", icon: Sun, desc: "" },
+    { id: "dark", label: "Dark Mode", icon: Moon, desc: "" },
+    { id: "signature", label: "Signature", icon: Sparkles, desc: "" },
+    { id: "oled", label: "OLED Pure Black", icon: Shield, desc: "" },
+    { id: "sunset", label: "Sunset Warm", icon: Sliders, desc: "" },
+    { id: "frost", label: "Frost Indigo", icon: FastForward, desc: "" },
+    { id: "high-contrast", label: "High Contrast", icon: Eye, desc: "" },
 ] as const;
 
 export function ThemeDropdown({
