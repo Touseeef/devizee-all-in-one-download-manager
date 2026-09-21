@@ -1,6 +1,4 @@
-
 import React, { useState, useEffect, useRef } from "react";
-
 import { invoke, convertFileSrc } from "@tauri-apps/api/core"; import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -45,8 +43,9 @@ import { PlaylistPanel } from "./components/downloads/PlaylistPanel";
 import { BatchProgress } from "./components/downloads/BatchProgress";
 import { DuplicateDialog } from "./components/common/DuplicateDialog";
 import type { DuplicateDialogState } from "./components/common/DuplicateDialog";
-import { TopBar } from "./components/layout/TopBar";
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
+import { AppShell } from "./components/layout/AppShell";
+import { Sidebar } from "./components/layout/Sidebar";
 
 
 export default function App() {
@@ -415,7 +414,7 @@ export default function App() {
       setActiveAudioPlaying(item);
       setNowPlaying({ type: "audio", id: item.id });
       if (audioRef.current) {
-        audioRef.current.src = item.file_path;
+        audioRef.current.src = convertFileSrc(item.file_path);
         audioRef.current.volume = isMuted ? 0 : volume;
         audioRef.current.play();
         setisAudioElementPlaying(true);
@@ -1359,9 +1358,6 @@ export default function App() {
   const attentionCount = history.filter(h => h.status === "error" || h.status === "interrupted").length;
   const completedCount = history.filter(h => h.status === "completed").length;
 
-  const audioHistory = history.filter(h =>
-    h.status === "completed" && isAudioFormat(h.format)
-  );
 
   // Filtered & Sorted history with Real-Time Search & Attention Filter
   const filteredHistory = history.filter(item => {
@@ -1401,7 +1397,25 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-surface-0 text-primary font-sans antialiased overflow-hidden select-none">
+    <AppShell
+      mainRef={mainScrollRef}
+      sidebar={(collapsed) => (
+        <Sidebar
+          collapsed={collapsed}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          activeCount={activeCount}
+          queuedCount={queuedCount}
+          nowPlaying={nowPlaying}
+          isAudioElementPlaying={isAudioElementPlaying}
+          activeVideoPlaying={activeVideoPlaying}
+          audioRef={audioRef}
+          videoElementRef={videoElementRef}
+          theme={theme}
+          handleThemeChange={handleThemeChange}
+        />
+      )}
+    >
       {/* Hidden Audio Player for In-line Previews */}
       <audio
         ref={audioRef}
@@ -1418,326 +1432,306 @@ export default function App() {
           setActiveAudioPlaying(null);
           setNowPlaying({ type: "none", id: null });
         }}
-
         className="hidden"
       />
 
-      {/* Sleek Custom Desktop TopBar */}
-      <TopBar
-        t={t}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        activeCount={activeCount}
-        audioHistoryCount={audioHistory.length}
-        nowPlaying={nowPlaying}
-        isAudioElementPlaying={isAudioElementPlaying}
-        activeVideoPlaying={activeVideoPlaying}
-        audioRef={audioRef}
-        videoElementRef={videoElementRef}
-        theme={theme}
-        handleThemeChange={handleThemeChange}
-        audioDevices={audioDevices}
-        selectedAudioDevice={selectedAudioDevice}
-        handleDeviceChange={handleDeviceChange}
-      />
-      {/* Main Workspace Body */}
-      <main ref={mainScrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
-        <ErrorBoundary fallbackTitle="An error occurred in this workspace view">
+      <ErrorBoundary fallbackTitle="An error occurred in this workspace view">
 
-          {/* ===================== TAB 1: DOWNLOADS ===================== */}
-          {activeTab === "downloads" && (
-            <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
+        {/* ===================== TAB 1: DOWNLOADS ===================== */}
+        {activeTab === "downloads" && (
+          <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
 
-              {/* StatTiles — 5 Purposeful Gradient Highlight Tiles (Clickable to Filter) */}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
-                <StatTile
-                  label="Home"
-                  count={history.length}
-                  sub="Dashboard View"
-                  gradient="linear-gradient(135deg, #475569 0%, #334155 100%)"
-                  icon={<Download size={17} />}
-                  onClick={() => { setQueueFilter("all"); setShowPreviews(true); setActivitySearchQuery(""); }}
-                />
-                <StatTile
-                  label={t("tile_active")}
-                  count={activeCount}
-                  sub={t("tile_active_sub")}
-                  gradient="var(--gradient-tile-primary)"
-                  icon={<Loader2 size={17} className={activeCount > 0 ? "animate-spin" : ""} />}
-                  onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
-                />
-                <StatTile
-                  label={t("tile_queued")}
-                  count={queuedCount}
-                  sub={t("tile_queued_sub")}
-                  gradient="var(--gradient-tile-blue)"
-                  icon={<Clock size={17} />}
-                  onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
-                />
-                <StatTile
-                  label={t("tile_attention")}
-                  count={attentionCount}
-                  sub={t("tile_attention_sub")}
-                  gradient="var(--gradient-tile-amber)"
-                  icon={<AlertCircle size={17} />}
-                  onClick={() => { setQueueFilter("attention"); setShowPreviews(false); }}
-                />
-                <StatTile
-                  label={t("tile_completed")}
-                  count={completedCount}
-                  sub={t("tile_completed_sub")}
-                  gradient="var(--gradient-tile-violet)"
-                  icon={<CheckCircle2 size={17} />}
-                  onClick={() => { setQueueFilter("completed"); setShowPreviews(false); }}
-                />
-              </div>
-
-              {/* URL Input Form */}
-              <UrlInput
-                url={url}
-                setUrl={setUrl}
-                isFetching={isFetching}
-                isSearchingYoutube={isSearchingYoutube}
-                onAnalyze={handleAnalyze}
-                onClear={resetInput}
-                onImportTxtLines={handleImportTxtLines}
-                placeholder={t("input_placeholder")}
-                labelAnalyze={t("btn_analyze")}
-                labelAnalyzing={t("analyzing")}
+            {/* StatTiles — 5 Purposeful Gradient Highlight Tiles (Clickable to Filter) */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
+              <StatTile
+                label="Home"
+                count={history.length}
+                sub="Dashboard View"
+                gradient="linear-gradient(135deg, #475569 0%, #334155 100%)"
+                icon={<Download size={17} />}
+                onClick={() => { setQueueFilter("all"); setShowPreviews(true); setActivitySearchQuery(""); }}
               />
-
-              {fetchError && (
-                <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
-                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                  <div className="text-body-sm font-medium">
-                    <span className="font-semibold">{t("analysis_failed")}: </span>{fetchError}
-                  </div>
-                </div>
-              )}
-
-              {/* YouTube Keyword Search Results Grid */}
-              {searchResults && (
-                <SearchResults
-                  results={searchResults}
-                  onClose={() => setSearchResults(null)}
-                  onInspect={(u) => {
-                    setUrl(u);
-                    analyzeUrl(u);
-                  }}
-                  onPlay={(entry) => handlePlayVideo(entry)}
-                />
-              )}
-
-              {/* Single Video Card Preview with Integrated In-App Player */}
-              {videoInfo && showPreviews && (
-                <VideoCard
-                  videoInfo={videoInfo}
-                  settings={settings}
-                  selectedFormat={selectedFormat}
-                  setSelectedFormat={setSelectedFormat}
-                  activeCardTask={activeCardTask}
-                  onDismissProgress={() => setActiveCardTaskId(null)}
-                  t={t}
-                  vm={{
-                    activeVideoPlaying,
-                    isVideoLoading,
-                    videoStreamUrl,
-                    videoFullscreen,
-                    videoContainerRef,
-                    videoElementRef,
-                    iframeRef,
-                    previewingId,
-                    isAudioElementPlaying,
-                    isLoadingAudioId,
-                    previewTime,
-                    previewDuration,
-                    audioRef,
-                    volume,
-                    isMuted,
-                    isTrimming,
-                    setIsTrimming,
-                    trimStart,
-                    setTrimStart,
-                    trimEnd,
-                    setTrimEnd,
-                    handlePlayVideo,
-                    toggleFullscreen,
-                    handleCloseVideoPlayer,
-                    exitFullscreenAndKeepPlaying,
-                    sendIframeCommand,
-                    toggleAudioPreview,
-                    handleSeek,
-                    handleSeekRelative,
-                    toggleMute,
-                    handleVolumeChange,
-                    adjustTrimTimestamp,
-                    handleStartDownload,
-                    handleRetryDownload,
-                    openFile,
-                    formatSeconds,
-                    setisAudioElementPlaying,
-                    setPreviewingId,
-                    setNowPlaying,
-                    setActiveVideoPlaying,
-                    nowPlaying,
-                  }}
-                />
-              )}
-
-              {/* Playlist Banner & Items Drawer */}
-              {(playlistInfo || isLoadingPlaylist) && showPreviews && (
-                <PlaylistPanel
-                  t={t}
-                  playlistInfo={playlistInfo}
-                  isLoadingPlaylist={isLoadingPlaylist}
-                  showSection={showPlaylistSection}
-                  setShowSection={setShowPlaylistSection}
-                  selectedIds={selectedPlaylistItems}
-                  toggleItem={togglePlaylistItem}
-                  selectAll={selectAllPlaylist}
-                  deselectAll={deselectAllPlaylist}
-                  batchPreset={batchPreset}
-                  setBatchPreset={setBatchPreset}
-                  setBatchFormatId={setBatchFormatId}
-                  setBatchExt={setBatchExt}
-                  setBatchIsAudio={setBatchIsAudio}
-                  onBatchDownload={() => handleBatchDownload()}
-                  onSingleDownload={(entry, presetLabel) =>
-                    handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry, presetLabel)
-                  }
-                  onPlayVideo={handlePlayVideo}
-                  onPreviewAudio={toggleAudioPreview}
-                  previewingId={previewingId}
-                  isAudioElementPlaying={isAudioElementPlaying}
-                  isLoadingAudioId={isLoadingAudioId}
-                  previewTime={previewTime}
-                  previewDuration={previewDuration}
-                  onSeek={handleSeek}
-                  onSeekRelative={handleSeekRelative}
-                  onClosePreview={() => {
-                    if (audioRef.current) audioRef.current.pause();
-                    setisAudioElementPlaying(false);
-                    setPreviewingId(null);
-                    setNowPlaying({ type: "none", id: null });
-                  }}
-                  history={history}
-                  audioRef={audioRef}
-                />
-              )}
-
-              {/* BatchProgressView for Playlist Bulk Downloads */}
-              {activePlaylistBatch && (
-                <BatchProgress
-                  title={activePlaylistBatch.title}
-                  taskIds={activePlaylistBatch.taskIds}
-                  formatLabel={activePlaylistBatch.formatLabel}
-                  history={history}
-                  onClear={() => setActivePlaylistBatch(null)}
-                />
-              )}
-
-              {/* Downloads Activity List with Categorization Tabs, Real-Time Search & Sorting */}
-              <ActivityList
-                t={t}
-                sortedHistory={sortedHistory}
-                activitySearchQuery={activitySearchQuery}
-                setActivitySearchQuery={setActivitySearchQuery}
-                queueFilter={queueFilter}
-                setQueueFilter={setQueueFilter}
-                sortBy={sortBy}
-                setSortBy={setSortBy}
-                selectedHistoryItems={selectedHistoryItems}
-                setSelectedHistoryItems={setSelectedHistoryItems}
-                onOpenFolder={openFolder}
-                onOpenFile={openFile}
-                onRemove={handleRemoveHistory}
-                onDeleteFile={handleDeleteFile}
-                onRetry={handleRetryDownload}
+              <StatTile
+                label={t("tile_active")}
+                count={activeCount}
+                sub={t("tile_active_sub")}
+                gradient="var(--gradient-tile-primary)"
+                icon={<Loader2 size={17} className={activeCount > 0 ? "animate-spin" : ""} />}
+                onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
               />
-
+              <StatTile
+                label={t("tile_queued")}
+                count={queuedCount}
+                sub={t("tile_queued_sub")}
+                gradient="var(--gradient-tile-blue)"
+                icon={<Clock size={17} />}
+                onClick={() => { setQueueFilter("active"); setShowPreviews(false); }}
+              />
+              <StatTile
+                label={t("tile_attention")}
+                count={attentionCount}
+                sub={t("tile_attention_sub")}
+                gradient="var(--gradient-tile-amber)"
+                icon={<AlertCircle size={17} />}
+                onClick={() => { setQueueFilter("attention"); setShowPreviews(false); }}
+              />
+              <StatTile
+                label={t("tile_completed")}
+                count={completedCount}
+                sub={t("tile_completed_sub")}
+                gradient="var(--gradient-tile-violet)"
+                icon={<CheckCircle2 size={17} />}
+                onClick={() => { setQueueFilter("completed"); setShowPreviews(false); }}
+              />
             </div>
-          )}
 
-          {/* ===================== TAB 2: AUDIO HUB ===================== */}
-          {activeTab === "audio" && (
-            <AudioHubTab
-              t={t}
-              history={history}
-              isAudioFormat={isAudioFormat}
-              handleStartDownload={handleStartDownload}
-              openFolder={openFolder}
-              openFile={openFile}
-              handleDeleteFile={handleDeleteFile}
-              audioRef={audioRef}
-              activeAudioPlaying={activeAudioPlaying}
-              isAudioElementPlaying={isAudioElementPlaying}
-              onPlayItem={playAudioFromLibrary}
+            {/* URL Input Form */}
+            <UrlInput
+              url={url}
+              setUrl={setUrl}
+              isFetching={isFetching}
+              isSearchingYoutube={isSearchingYoutube}
+              onAnalyze={handleAnalyze}
+              onClear={resetInput}
+              onImportTxtLines={handleImportTxtLines}
+              placeholder={t("input_placeholder")}
+              labelAnalyze={t("btn_analyze")}
+              labelAnalyzing={t("analyzing")}
             />
-          )}
-          {/* ===================== TAB 3: COMPLETE SETTINGS ===================== */}
-          {activeTab === "settings" && (
-            <SettingsTab
+
+            {fetchError && (
+              <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <div className="text-body-sm font-medium">
+                  <span className="font-semibold">{t("analysis_failed")}: </span>{fetchError}
+                </div>
+              </div>
+            )}
+
+            {/* YouTube Keyword Search Results Grid */}
+            {searchResults && (
+              <SearchResults
+                results={searchResults}
+                onClose={() => setSearchResults(null)}
+                onInspect={(u) => {
+                  setUrl(u);
+                  analyzeUrl(u);
+                }}
+                onPlay={(entry) => handlePlayVideo(entry)}
+              />
+            )}
+
+            {/* Single Video Card Preview with Integrated In-App Player */}
+            {videoInfo && showPreviews && (
+              <VideoCard
+                videoInfo={videoInfo}
+                settings={settings}
+                selectedFormat={selectedFormat}
+                setSelectedFormat={setSelectedFormat}
+                activeCardTask={activeCardTask}
+                onDismissProgress={() => setActiveCardTaskId(null)}
+                t={t}
+                vm={{
+                  activeVideoPlaying,
+                  isVideoLoading,
+                  videoStreamUrl,
+                  videoFullscreen,
+                  videoContainerRef,
+                  videoElementRef,
+                  iframeRef,
+                  previewingId,
+                  isAudioElementPlaying,
+                  isLoadingAudioId,
+                  previewTime,
+                  previewDuration,
+                  audioRef,
+                  volume,
+                  isMuted,
+                  isTrimming,
+                  setIsTrimming,
+                  trimStart,
+                  setTrimStart,
+                  trimEnd,
+                  setTrimEnd,
+                  handlePlayVideo,
+                  toggleFullscreen,
+                  handleCloseVideoPlayer,
+                  exitFullscreenAndKeepPlaying,
+                  sendIframeCommand,
+                  toggleAudioPreview,
+                  handleSeek,
+                  handleSeekRelative,
+                  toggleMute,
+                  handleVolumeChange,
+                  adjustTrimTimestamp,
+                  handleStartDownload,
+                  handleRetryDownload,
+                  openFile,
+                  formatSeconds,
+                  setisAudioElementPlaying,
+                  setPreviewingId,
+                  setNowPlaying,
+                  setActiveVideoPlaying,
+                  nowPlaying,
+                }}
+              />
+            )}
+
+            {/* Playlist Banner & Items Drawer */}
+            {(playlistInfo || isLoadingPlaylist) && showPreviews && (
+              <PlaylistPanel
+                t={t}
+                playlistInfo={playlistInfo}
+                isLoadingPlaylist={isLoadingPlaylist}
+                showSection={showPlaylistSection}
+                setShowSection={setShowPlaylistSection}
+                selectedIds={selectedPlaylistItems}
+                toggleItem={togglePlaylistItem}
+                selectAll={selectAllPlaylist}
+                deselectAll={deselectAllPlaylist}
+                batchPreset={batchPreset}
+                setBatchPreset={setBatchPreset}
+                setBatchFormatId={setBatchFormatId}
+                setBatchExt={setBatchExt}
+                setBatchIsAudio={setBatchIsAudio}
+                onBatchDownload={() => handleBatchDownload()}
+                onSingleDownload={(entry, presetLabel) =>
+                  handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry, presetLabel)
+                }
+                onPlayVideo={handlePlayVideo}
+                onPreviewAudio={toggleAudioPreview}
+                previewingId={previewingId}
+                isAudioElementPlaying={isAudioElementPlaying}
+                isLoadingAudioId={isLoadingAudioId}
+                previewTime={previewTime}
+                previewDuration={previewDuration}
+                onSeek={handleSeek}
+                onSeekRelative={handleSeekRelative}
+                onClosePreview={() => {
+                  if (audioRef.current) audioRef.current.pause();
+                  setisAudioElementPlaying(false);
+                  setPreviewingId(null);
+                  setNowPlaying({ type: "none", id: null });
+                }}
+                history={history}
+                audioRef={audioRef}
+              />
+            )}
+
+            {/* BatchProgressView for Playlist Bulk Downloads */}
+            {activePlaylistBatch && (
+              <BatchProgress
+                title={activePlaylistBatch.title}
+                taskIds={activePlaylistBatch.taskIds}
+                formatLabel={activePlaylistBatch.formatLabel}
+                history={history}
+                onClear={() => setActivePlaylistBatch(null)}
+              />
+            )}
+
+            {/* Downloads Activity List with Categorization Tabs, Real-Time Search & Sorting */}
+            <ActivityList
               t={t}
-              settings={settings}
-              updateSetting={updateSetting}
-              theme={theme}
-              handleThemeChange={handleThemeChange}
-              audioDevices={audioDevices}
-              selectedAudioDevice={selectedAudioDevice}
-              handleDeviceChange={handleDeviceChange}
-              volume={volume}
-              isMuted={isMuted}
-              handleVolumeChange={handleVolumeChange}
-              toggleMute={toggleMute}
-              handleToggleAutostart={handleToggleAutostart}
-              handleBrowseFolder={handleBrowseFolder}
-              openFolder={openFolder}
+              sortedHistory={sortedHistory}
+              activitySearchQuery={activitySearchQuery}
+              setActivitySearchQuery={setActivitySearchQuery}
+              queueFilter={queueFilter}
+              setQueueFilter={setQueueFilter}
+              sortBy={sortBy}
+              setSortBy={setSortBy}
+              selectedHistoryItems={selectedHistoryItems}
+              setSelectedHistoryItems={setSelectedHistoryItems}
+              onOpenFolder={openFolder}
+              onOpenFile={openFile}
+              onRemove={handleRemoveHistory}
+              onDeleteFile={handleDeleteFile}
+              onRetry={handleRetryDownload}
             />
-          )}
 
-        </ErrorBoundary>
+          </div>
+        )}
 
-        {duplicateDialog && (
-          <DuplicateDialog
-            state={duplicateDialog}
-            onOverwrite={() => {
-              handleStartDownload(
-                duplicateDialog.formatId,
-                duplicateDialog.ext,
-                duplicateDialog.isAudio,
-                duplicateDialog.specificInfo,
-                duplicateDialog.formatLabel,
-                "overwrite"
-              );
-              setDuplicateDialog(null);
-            }}
-            onKeepBoth={() => {
-              handleStartDownload(
-                duplicateDialog.formatId,
-                duplicateDialog.ext,
-                duplicateDialog.isAudio,
-                duplicateDialog.specificInfo,
-                duplicateDialog.formatLabel,
-                "keep_both"
-              );
-              setDuplicateDialog(null);
-            }}
-            onCancel={() => setDuplicateDialog(null)}
+        {/* ===================== TAB 2: AUDIO HUB ===================== */}
+        {activeTab === "audio" && (
+          <AudioHubTab
+            t={t}
+            history={history}
+            isAudioFormat={isAudioFormat}
+            handleStartDownload={handleStartDownload}
+            openFolder={openFolder}
+            openFile={openFile}
+            handleDeleteFile={handleDeleteFile}
+            audioRef={audioRef}
+            activeAudioPlaying={activeAudioPlaying}
+            isAudioElementPlaying={isAudioElementPlaying}
+            onPlayItem={playAudioFromLibrary}
           />
         )}
-        {confirmDialogState && (
-          <ConfirmDialog
-            isOpen={confirmDialogState.isOpen}
-            title={confirmDialogState.title}
-            message={confirmDialogState.message}
-            confirmText={confirmDialogState.confirmText}
-            confirmVariant={confirmDialogState.confirmVariant}
-            onConfirm={confirmDialogState.onConfirm}
-            onCancel={() => setConfirmDialogState(null)}
+
+        {/* ===================== TAB 3: COMPLETE SETTINGS ===================== */}
+        {activeTab === "settings" && (
+          <SettingsTab
+            t={t}
+            settings={settings}
+            updateSetting={updateSetting}
+            theme={theme}
+            handleThemeChange={handleThemeChange}
+            audioDevices={audioDevices}
+            selectedAudioDevice={selectedAudioDevice}
+            handleDeviceChange={handleDeviceChange}
+            volume={volume}
+            isMuted={isMuted}
+            handleVolumeChange={handleVolumeChange}
+            toggleMute={toggleMute}
+            handleToggleAutostart={handleToggleAutostart}
+            handleBrowseFolder={handleBrowseFolder}
+            openFolder={openFolder}
           />
         )}
-      </main>
-    </div>
+
+      </ErrorBoundary>
+
+      {duplicateDialog && (
+        <DuplicateDialog
+          state={duplicateDialog}
+          onOverwrite={() => {
+            handleStartDownload(
+              duplicateDialog.formatId,
+              duplicateDialog.ext,
+              duplicateDialog.isAudio,
+              duplicateDialog.specificInfo,
+              duplicateDialog.formatLabel,
+              "overwrite"
+            );
+            setDuplicateDialog(null);
+          }}
+          onKeepBoth={() => {
+            handleStartDownload(
+              duplicateDialog.formatId,
+              duplicateDialog.ext,
+              duplicateDialog.isAudio,
+              duplicateDialog.specificInfo,
+              duplicateDialog.formatLabel,
+              "keep_both"
+            );
+            setDuplicateDialog(null);
+          }}
+          onCancel={() => setDuplicateDialog(null)}
+        />
+      )}
+
+      {confirmDialogState && (
+        <ConfirmDialog
+          isOpen={confirmDialogState.isOpen}
+          title={confirmDialogState.title}
+          message={confirmDialogState.message}
+          confirmText={confirmDialogState.confirmText}
+          confirmVariant={confirmDialogState.confirmVariant}
+          onConfirm={confirmDialogState.onConfirm}
+          onCancel={() => setConfirmDialogState(null)}
+        />
+      )}
+    </AppShell>
   );
 }
 

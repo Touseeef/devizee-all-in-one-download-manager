@@ -1,0 +1,14 @@
+[33mcommit 105576e16c5601802d70be6585f74da9a7cdc74b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mpre-final-fixes[m[33m)[m
+Author: Touseeef <connect.touseeef@gmail.com>
+Date:   Mon Sep 21 16:41:27 2026 +0500
+
+    fix: reliable audio preview, correct path resolution, animated waveform
+    
+    - fetch_audio_bytes uses yt-dlp -o - for correct auth/cookies
+    - reset nowPlaying on audio error so topbar reflects reality
+    - preserve <video> element mount when audio plays (no position loss)
+    - resolve_folder_path uses USERPROFILE\Downloads as anchor
+    - frontend uses revealItemInDir via opener plugin
+    - WaveformVisualizer rewritten as animated oscilloscope line
+    - Audio Hub uses convertFileSrc + asset: CSP for local playback
+    - extract components from App.tsx (types/, lib/, components/)

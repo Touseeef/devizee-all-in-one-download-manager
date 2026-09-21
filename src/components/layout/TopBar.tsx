@@ -4,6 +4,7 @@ import type { TranslationKey } from "../../lib/i18n";
 import { TopNavButton } from "../common/TopNavButton";
 import { ThemeDropdown } from "../common/ThemeDropdown";
 import { WaveformVisualizer } from "../common/WaveformVisualizer";
+import logo from "../../assets/devizee-logo.png";
 
 export function TopBar({
     t,
@@ -45,9 +46,12 @@ export function TopBar({
         >
             {/* Left: Branding & Status */}
             <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-white shadow-sm">
-                    <Download size={15} strokeWidth={2.5} />
-                </div>
+                <img
+                    src={logo}
+                    alt="Devizee"
+                    className="w-7 h-7 shrink-0 pointer-events-none"
+                    draggable={false}
+                />
                 <div className="flex items-center gap-2">
                     <span className="font-semibold text-body-sm tracking-tight text-primary">Devizee</span>
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium">
