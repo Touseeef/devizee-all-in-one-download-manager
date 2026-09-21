@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core"; import { listen } from "@tauri-apps/api/event";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -332,6 +334,40 @@ export default function App() {
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
+  // Taskbar progress bar — reflects active download state
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const active = history.filter(
+      (h) =>
+        h.status === "downloading" ||
+        h.status === "starting" ||
+        h.status === "fetching_metadata" ||
+        h.status === "muxing"
+    );
+
+    if (active.length === 0) {
+      // 0 = remove bar
+      win.setProgressBar({ progress: 0 }).catch(() => { });
+    } else if (active.length === 1) {
+      const t = active[0];
+      if (t.status === "muxing" || t.status === "starting") {
+        // -1 = indeterminate (animated pulse in the taskbar)
+        win.setProgressBar({ progress: -1 }).catch(() => { });
+      } else {
+        // 0 to 1 range
+        const frac = Math.max(0, Math.min(1, (t.percent || 0) / 100));
+        win.setProgressBar({ progress: frac }).catch((e) =>
+          console.warn("[Taskbar] setProgressBar failed:", e)
+        );
+      }
+    } else {
+      const avg =
+        active.reduce((sum, h) => sum + (h.percent || 0), 0) / active.length / 100;
+      win.setProgressBar({ progress: Math.max(0, Math.min(1, avg)) }).catch((e) =>
+        console.warn("[Taskbar] setProgressBar failed:", e)
+      );
+    }
+  }, [history]);
   // Single Consolidated Volume Controller
   const handleVolumeChange = (newVol: number) => {
     const clamped = Math.max(0, Math.min(1, newVol));
@@ -784,12 +820,19 @@ export default function App() {
   };
 
   // Single-Instance Native Messaging Relay Listener
+  // Global hotkey handler (Ctrl+Shift+D) — read clipboard into the URL field
   useEffect(() => {
-    const unlisten = listen<string>("open-url", (event) => {
-      if (event.payload) {
-        setUrl(event.payload);
-        setActiveTab("downloads");
-        analyzeUrl(event.payload);
+    const unlisten = listen("global-hotkey-paste", async () => {
+      try {
+        const text = await readText();
+        if (text && text.trim()) {
+          setActiveTab("downloads");
+          setUrl(text.trim());
+          // Auto-analyze — the hotkey is meant to be a one-shot "go" action
+          analyzeUrl(text.trim());
+        }
+      } catch (e) {
+        console.warn("Hotkey clipboard read failed:", e);
       }
     });
     return () => {
@@ -1444,6 +1487,7 @@ export default function App() {
         customFlags: settings.customFlags ? settings.customFlags : null,
         scanAntivirus: settings.scanAntivirus,
         downloadSections: null,
+        cookiesFromBrowser: settings.cookiesFromBrowser,
         duplicateAction: "overwrite",
       });
     } catch (e: any) {
