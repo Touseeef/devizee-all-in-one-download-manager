@@ -1,6 +1,6 @@
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::process::Command;
-use serde_json::Value;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -47,17 +47,53 @@ fn dispatch_url(url: &str) {
         if let Some(exe_dir) = exe_path.parent() {
             candidates.push(exe_dir.join("devizee-all-in-one-download-manager.exe"));
             candidates.push(exe_dir.join("Devizee.exe"));
-            candidates.push(exe_dir.join("..").join("devizee-all-in-one-download-manager.exe"));
-            candidates.push(exe_dir.join("..").join("src-tauri").join("target").join("debug").join("devizee-all-in-one-download-manager.exe"));
-            candidates.push(exe_dir.join("..").join("src-tauri").join("target").join("release").join("devizee-all-in-one-download-manager.exe"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("devizee-all-in-one-download-manager.exe"),
+            );
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("src-tauri")
+                    .join("target")
+                    .join("debug")
+                    .join("devizee-all-in-one-download-manager.exe"),
+            );
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("src-tauri")
+                    .join("target")
+                    .join("release")
+                    .join("devizee-all-in-one-download-manager.exe"),
+            );
         }
     }
 
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("src-tauri").join("target").join("debug").join("devizee-all-in-one-download-manager.exe"));
-        candidates.push(cwd.join("src-tauri").join("target").join("release").join("devizee-all-in-one-download-manager.exe"));
-        candidates.push(cwd.join("target").join("debug").join("devizee-all-in-one-download-manager.exe"));
-        candidates.push(cwd.join("target").join("release").join("devizee-all-in-one-download-manager.exe"));
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("target")
+                .join("debug")
+                .join("devizee-all-in-one-download-manager.exe"),
+        );
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("target")
+                .join("release")
+                .join("devizee-all-in-one-download-manager.exe"),
+        );
+        candidates.push(
+            cwd.join("target")
+                .join("debug")
+                .join("devizee-all-in-one-download-manager.exe"),
+        );
+        candidates.push(
+            cwd.join("target")
+                .join("release")
+                .join("devizee-all-in-one-download-manager.exe"),
+        );
     }
 
     let mut launched = false;

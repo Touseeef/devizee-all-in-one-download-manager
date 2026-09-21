@@ -1,8 +1,8 @@
+use crate::status::DownloadStatus;
 use rusqlite::{Connection, Result};
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri::Manager;
-use serde::{Serialize, Deserialize};
-use crate::status::DownloadStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRecord {
@@ -13,6 +13,7 @@ pub struct DownloadRecord {
     pub status: DownloadStatus,
     pub percent: f32,
     pub format: String,
+    pub format_id: String,
     pub date_added: i64,
     pub hidden: bool,
     #[serde(default)]
@@ -22,13 +23,19 @@ pub struct DownloadRecord {
 }
 
 pub fn init_db(app: &AppHandle) -> Result<Connection> {
-    let app_dir = app.path().app_local_data_dir().expect("Failed to get local data dir");
+    let app_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
     if !app_dir.exists() {
-        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&app_dir)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     }
     let db_path = app_dir.join("downloads.db");
     let conn = Connection::open(db_path)?;
 
+    // Complete base table schema
     conn.execute(
         "CREATE TABLE IF NOT EXISTS downloads (
             id TEXT PRIMARY KEY,
@@ -41,14 +48,19 @@ pub fn init_db(app: &AppHandle) -> Result<Connection> {
             date_added INTEGER NOT NULL,
             hidden BOOLEAN NOT NULL DEFAULT 0,
             error_code TEXT,
-            error_message TEXT
+            error_message TEXT,
+            format_id TEXT DEFAULT ''
         )",
         [],
     )?;
 
-    // Safe migrations for pre-existing tables lacking these columns
+    // Safe migration fallbacks for existing legacy databases
     let _ = conn.execute("ALTER TABLE downloads ADD COLUMN error_code TEXT", []);
     let _ = conn.execute("ALTER TABLE downloads ADD COLUMN error_message TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE downloads ADD COLUMN format_id TEXT DEFAULT ''",
+        [],
+    );
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS settings (
@@ -68,10 +80,12 @@ pub fn init_db(app: &AppHandle) -> Result<Connection> {
 }
 
 pub fn insert_download(conn: &Connection, record: &DownloadRecord) -> Result<()> {
-    let status_str = serde_json::to_string(&record.status).unwrap().replace("\"", "");
+    let status_str = serde_json::to_string(&record.status)
+        .unwrap()
+        .replace("\"", "");
     conn.execute(
-        "INSERT INTO downloads (id, url, title, file_path, status, percent, format, date_added, hidden, error_code, error_message)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO downloads (id, url, title, file_path, status, percent, format, format_id, date_added, hidden, error_code, error_message)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         (
             &record.id,
             &record.url,
@@ -80,6 +94,7 @@ pub fn insert_download(conn: &Connection, record: &DownloadRecord) -> Result<()>
             &status_str,
             &record.percent,
             &record.format,
+            &record.format_id,
             &record.date_added,
             &record.hidden,
             &record.error_code,
@@ -107,7 +122,14 @@ pub fn update_download_status(
              error_code = COALESCE(?4, error_code),
              error_message = COALESCE(?5, error_message)
          WHERE id = ?6",
-        (&status_str, &percent, &file_path, &error_code, &error_message, id),
+        (
+            &status_str,
+            &percent,
+            &file_path,
+            &error_code,
+            &error_message,
+            id,
+        ),
     )?;
     Ok(())
 }
@@ -124,11 +146,12 @@ pub fn delete_download(conn: &Connection, id: &str) -> Result<()> {
 }
 
 pub fn get_all_downloads(conn: &Connection) -> Result<Vec<DownloadRecord>> {
-    let mut stmt = conn.prepare("SELECT id, url, title, file_path, status, percent, format, date_added, hidden, error_code, error_message FROM downloads WHERE hidden = 0 ORDER BY date_added DESC")?;
+    let mut stmt = conn.prepare("SELECT id, url, title, file_path, status, percent, format, format_id, date_added, hidden, error_code, error_message FROM downloads WHERE hidden = 0 ORDER BY date_added DESC")?;
     let download_iter = stmt.query_map([], |row| {
         let status_str: String = row.get(4)?;
-        let status = serde_json::from_str(&format!("\"{}\"", status_str)).unwrap_or(DownloadStatus::Error);
-        
+        let status =
+            serde_json::from_str(&format!("\"{}\"", status_str)).unwrap_or(DownloadStatus::Error);
+
         Ok(DownloadRecord {
             id: row.get(0)?,
             url: row.get(1)?,
@@ -137,11 +160,12 @@ pub fn get_all_downloads(conn: &Connection) -> Result<Vec<DownloadRecord>> {
             status,
             percent: row.get(5)?,
             format: row.get(6)?,
-            date_added: row.get(7)?,
-            hidden: row.get(8)?,
+            format_id: row.get(7)?,
+            date_added: row.get(8)?,
+            hidden: row.get(9)?,
             file_size: None,
-            error_code: row.get(9)?,
-            error_message: row.get(10)?,
+            error_code: row.get(10)?,
+            error_message: row.get(11)?,
         })
     })?;
 

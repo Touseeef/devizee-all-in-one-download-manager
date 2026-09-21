@@ -1,10 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <title>Devizee Extension</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
       width: 320px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -14,6 +20,7 @@
       font-size: 13px;
       user-select: none;
     }
+
     .header {
       display: flex;
       align-items: center;
@@ -22,6 +29,7 @@
       padding-bottom: 10px;
       border-bottom: 1px solid #1e293b;
     }
+
     .brand {
       display: flex;
       align-items: center;
@@ -30,8 +38,9 @@
       font-size: 14px;
       letter-spacing: -0.01em;
     }
+
     .brand-badge {
-      background: #3b82f6;
+      background: #7c3aed;
       color: white;
       width: 22px;
       height: 22px;
@@ -41,19 +50,28 @@
       justify-content: center;
       font-size: 12px;
     }
+
     .status-pill {
       font-size: 10px;
       padding: 2px 7px;
       border-radius: 9999px;
       font-weight: 600;
     }
-    .status-active { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
-    .status-paused { background: rgba(239, 68, 68, 0.2); color: #f87171; }
 
-    /* Master Pause Button */
+    .status-active {
+      background: rgba(124, 58, 237, 0.2);
+      color: #c4b5fd;
+    }
+
+    .status-paused {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+
     .pause-container {
       margin-bottom: 14px;
     }
+
     .btn-pause {
       width: 100%;
       padding: 10px 12px;
@@ -68,21 +86,25 @@
       gap: 8px;
       transition: all 0.15s ease;
     }
+
     .btn-pause.active-state {
       background: rgba(239, 68, 68, 0.15);
       color: #fca5a5;
       border-color: rgba(239, 68, 68, 0.4);
     }
+
     .btn-pause.active-state:hover {
       background: rgba(239, 68, 68, 0.25);
     }
+
     .btn-pause.paused-state {
-      background: #3b82f6;
+      background: #7c3aed;
       color: #ffffff;
-      border-color: #3b82f6;
+      border-color: #7c3aed;
     }
+
     .btn-pause.paused-state:hover {
-      background: #2563eb;
+      background: #6d28d9;
     }
 
     .card {
@@ -92,6 +114,7 @@
       padding: 12px;
       margin-bottom: 12px;
     }
+
     .card-title {
       font-size: 11px;
       font-weight: 600;
@@ -100,6 +123,7 @@
       color: #94a3b8;
       margin-bottom: 8px;
     }
+
     .media-info {
       font-size: 12px;
       color: #cbd5e1;
@@ -107,10 +131,11 @@
       word-break: break-word;
       line-height: 1.4;
     }
+
     .btn-send {
       width: 100%;
       padding: 8px 12px;
-      background: #3b82f6;
+      background: #7c3aed;
       color: white;
       border: none;
       border-radius: 6px;
@@ -118,8 +143,16 @@
       cursor: pointer;
       transition: background 0.15s;
     }
-    .btn-send:hover { background: #2563eb; }
-    .btn-send:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+
+    .btn-send:hover {
+      background: #6d28d9;
+    }
+
+    .btn-send:disabled {
+      background: #334155;
+      color: #64748b;
+      cursor: not-allowed;
+    }
 
     .toggle-row {
       display: flex;
@@ -128,11 +161,13 @@
       gap: 12px;
       padding: 6px 0;
     }
+
     .toggle-label {
       font-size: 12px;
       color: #e2e8f0;
       font-weight: 500;
     }
+
     .toggle-sub {
       font-size: 10px;
       color: #64748b;
@@ -140,32 +175,57 @@
       margin-top: 1px;
     }
 
-    /* Switch styling */
     .switch {
       position: relative;
       display: inline-block;
       width: 34px;
       height: 18px;
-      shrink: 0;
+      flex-shrink: 0;
     }
-    .switch input { opacity: 0; width: 0; height: 0; }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
     .slider {
-      position: absolute; cursor: pointer;
-      top: 0; left: 0; right: 0; bottom: 0;
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
       background-color: #334155;
       transition: .2s;
       border-radius: 18px;
     }
+
     .slider:before {
-      position: absolute; content: "";
-      height: 14px; width: 14px;
-      left: 2px; bottom: 2px;
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 2px;
+      bottom: 2px;
       background-color: white;
       transition: .2s;
       border-radius: 50%;
     }
-    input:checked + .slider { background-color: #3b82f6; }
-    input:checked + .slider:before { transform: translateX(16px); }
+
+    input:checked+.slider {
+      background-color: #7c3aed;
+    }
+
+    input:checked+.slider:before {
+      transform: translateX(16px);
+    }
+
+    .divider {
+      height: 1px;
+      background: #1e293b;
+      margin: 6px 0;
+    }
 
     .footer {
       display: flex;
@@ -177,14 +237,19 @@
       font-size: 11px;
       color: #64748b;
     }
+
     .footer a {
-      color: #60a5fa;
+      color: #a78bfa;
       text-decoration: none;
       cursor: pointer;
     }
-    .footer a:hover { text-decoration: underline; }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
+
 <body>
   <div class="header">
     <div class="brand">
@@ -194,7 +259,6 @@
     <span id="statusBadge" class="status-pill status-active">Active</span>
   </div>
 
-  <!-- Master Pause Button -->
   <div class="pause-container">
     <button id="pauseBtn" class="btn-pause active-state">
       <span id="pauseIcon">⏸</span>
@@ -202,15 +266,28 @@
     </button>
   </div>
 
-  <!-- Active Tab Streaming Media Card -->
   <div class="card">
     <div class="card-title">Current Tab Media</div>
     <div id="tabMediaStatus" class="media-info">Checking active tab...</div>
     <button id="sendTabBtn" class="btn-send" disabled>Send to Devizee</button>
   </div>
 
-  <!-- Passive Download Interception Toggle -->
   <div class="card">
+    <!-- Floating On-Page Grabber Toggle -->
+    <div class="toggle-row">
+      <div>
+        <span class="toggle-label">Floating Grabber Pill</span>
+        <span class="toggle-sub">Show draggable button on video sites</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="pillToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Passive Download Interception Toggle -->
     <div class="toggle-row">
       <div>
         <span class="toggle-label">Intercept Downloads</span>
@@ -230,4 +307,5 @@
 
   <script src="popup.js"></script>
 </body>
+
 </html>

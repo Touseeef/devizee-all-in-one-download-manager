@@ -24,6 +24,7 @@ const SUPPORTED_STREAM_DOMAINS = [
 const DEFAULT_SETTINGS = {
   interceptDownloads: false, // Privacy-first default: OFF
   paused: false,             // Master pause toggle for all grabbing
+  showFloatingPill: true,    // On-page "Grab this video" floating widget
   minFileSizeMB: 10,         // Minimum threshold for browser downloads
   excludedDomains: ["localhost", "127.0.0.1"]
 };
@@ -143,7 +144,7 @@ async function handleDownloadInterception(downloadItem) {
 
     // Erase cancelled download entry from history to keep it clean
     setTimeout(() => {
-      chrome.downloads.erase({ id: downloadItem.id }).catch(() => {});
+      chrome.downloads.erase({ id: downloadItem.id }).catch(() => { });
     }, 1000);
 
     // Relay to Devizee
@@ -160,7 +161,7 @@ async function relayUrlToDevizee(urlStr) {
   try {
     const parsed = new URL(urlStr);
     cookies = await chrome.cookies.getAll({ domain: parsed.hostname });
-  } catch {}
+  } catch { }
 
   const payload = {
     action: "download",
@@ -168,47 +169,44 @@ async function relayUrlToDevizee(urlStr) {
     cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain, path: c.path }))
   };
 
-  try {
-    // Attempt Chrome Native Messaging first
-    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, payload, (response) => {
-      if (chrome.runtime.lastError) {
-        console.log("[Devizee] Native messaging host unreachable, falling back to protocol handler:", chrome.runtime.lastError.message);
-        fallbackToProtocolHandler(urlStr);
-      } else {
-        console.log("[Devizee] Successfully sent payload via native messaging:", response);
-      }
-    });
-  } catch (e) {
-    fallbackToProtocolHandler(urlStr);
-  }
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, payload, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[Devizee] Native messaging unreachable:", chrome.runtime.lastError.message);
+          fallbackToProtocolHandler(urlStr);
+          resolve({ success: false, fallback: true });
+        } else {
+          console.log("[Devizee] Successfully sent to native host:", response);
+          resolve({ success: true, response });
+        }
+      });
+    } catch (e) {
+      console.warn("[Devizee] Native messaging exception:", e);
+      fallbackToProtocolHandler(urlStr);
+      resolve({ success: false, fallback: true });
+    }
+  });
 }
-
 function fallbackToProtocolHandler(urlStr) {
   const deepLink = `streamgrab://download?url=${encodeURIComponent(urlStr)}`;
   chrome.tabs.create({ url: deepLink, active: false }, (tab) => {
     // Clean up temporary tab quickly
     setTimeout(() => {
-      if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+      if (tab?.id) chrome.tabs.remove(tab.id).catch(() => { });
     }, 1200);
   });
 }
 
-// Listen for popup requests
+// Message Listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "sendTabToDevizee") {
-    relayUrlToDevizee(request.url).then(() => {
-      sendResponse({ success: true });
-    });
-    return true; // async
-  }
-  if (request.action === "testNativeHost") {
-    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, { action: "ping" }, (response) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ success: false, error: chrome.runtime.lastError.message });
-      } else {
-        sendResponse({ success: true, response });
-      }
-    });
-    return true;
+    const targetUrl = request.url || sender.tab?.url;
+    if (targetUrl) {
+      relayUrlToDevizee(targetUrl).then(sendResponse);
+    } else {
+      sendResponse({ success: false, error: "No valid URL found" });
+    }
+    return true; // Keep communication channel open for async sendResponse
   }
 });

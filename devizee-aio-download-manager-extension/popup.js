@@ -4,6 +4,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pauseText = document.getElementById("pauseText");
   const statusBadge = document.getElementById("statusBadge");
   const interceptToggle = document.getElementById("interceptToggle");
+  const pillToggle = document.getElementById("pillToggle");
   const tabMediaStatus = document.getElementById("tabMediaStatus");
   const sendTabBtn = document.getElementById("sendTabBtn");
   const optionsLink = document.getElementById("optionsLink");
@@ -11,7 +12,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Load stored settings
   const settings = await chrome.storage.local.get({
     paused: false,
-    interceptDownloads: false
+    interceptDownloads: false,
+    showFloatingPill: true
   });
 
   function updatePauseUI(isPaused) {
@@ -32,13 +34,36 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   updatePauseUI(settings.paused);
   interceptToggle.checked = settings.interceptDownloads;
+  pillToggle.checked = settings.showFloatingPill !== false;
+
+  // Broadcast visibility to every open tab instantly
+  async function broadcastPillVisibility(isVisible) {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (t.id) {
+        chrome.tabs.sendMessage(t.id, {
+          action: "updatePillVisibility",
+          visible: isVisible
+        }).catch(() => { });
+      }
+    }
+  }
 
   // Master Pause Click Listener
   pauseBtn.addEventListener("click", async () => {
-    const curr = await chrome.storage.local.get({ paused: false });
+    const curr = await chrome.storage.local.get({ paused: false, showFloatingPill: true });
     const nextPaused = !curr.paused;
     await chrome.storage.local.set({ paused: nextPaused });
     updatePauseUI(nextPaused);
+    broadcastPillVisibility(!nextPaused && curr.showFloatingPill !== false);
+  });
+
+  // Floating Pill Toggle Listener (Instant DOM removal / recreation)
+  pillToggle.addEventListener("change", async (e) => {
+    const isChecked = e.target.checked;
+    await chrome.storage.local.set({ showFloatingPill: isChecked });
+    const curr = await chrome.storage.local.get({ paused: false });
+    broadcastPillVisibility(isChecked && !curr.paused);
   });
 
   // Intercept Toggle Listener
@@ -77,7 +102,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     sendTabBtn.textContent = "Sending to Devizee...";
     sendTabBtn.disabled = true;
 
-    chrome.runtime.sendMessage({ action: "sendTabToDevizee", url: activeUrl }, (res) => {
+    chrome.runtime.sendMessage({ action: "sendTabToDevizee", url: activeUrl }, () => {
       sendTabBtn.textContent = "Sent to Devizee ✓";
       setTimeout(() => window.close(), 1000);
     });
