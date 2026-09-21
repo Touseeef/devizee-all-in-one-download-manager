@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { AlertCircle } from "lucide-react";
 
 export function ConfirmDialog({
@@ -17,6 +18,15 @@ export function ConfirmDialog({
     onConfirm: () => void;
     onCancel: () => void;
 }) {
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") onCancel();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [isOpen, onCancel]);
+
     if (!isOpen) return null;
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in">

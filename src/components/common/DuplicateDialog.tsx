@@ -1,4 +1,4 @@
-// src/components/common/DuplicateDialog.tsx
+import { useEffect } from "react";
 import { AlertCircle } from "lucide-react";
 
 export type DuplicateDialogState = {
@@ -21,6 +21,15 @@ export function DuplicateDialog({
     onKeepBoth: () => void;
     onCancel: () => void;
 }) {
+    useEffect(() => {
+        if (!state.isOpen) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") onCancel();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [state.isOpen, onCancel]);
+
     if (!state.isOpen) return null;
 
     return (

@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { Download, Loader2, Search, X } from "lucide-react";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 
 export function UrlInput({
     url,
@@ -56,9 +57,6 @@ export function UrlInput({
                     type="button"
                     onClick={async () => {
                         try {
-                            const { readText } = await import(
-                                "@tauri-apps/plugin-clipboard-manager"
-                            );
                             const text = await readText();
                             if (text) setUrl(text);
                         } catch (e) {

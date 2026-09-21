@@ -70,12 +70,6 @@
   --color-status-info: #3b82f6;
   --color-status-info-subtle: rgb(59 130 246 / 0.15);
 
-  /* Hero/stat-tile gradients */
-  --gradient-tile-primary: linear-gradient(135deg, #34d399, #0d9488);
-  --gradient-tile-amber: linear-gradient(135deg, #fbbf24, #f59e0b);
-  --gradient-tile-violet: linear-gradient(135deg, #a78bfa, #7c3aed);
-  --gradient-tile-blue: linear-gradient(135deg, #60a5fa, #2563eb);
-
   /* Radius — sleek, modern, less round */
   --radius-sm: 6px;
   /* chips, small controls, inputs */
@@ -234,4 +228,19 @@
   --color-accent: #00f0ff;
   --color-accent-hover: #38f9d7;
   --color-accent-subtle: rgb(0 240 255 / 0.25);
+}
+
+[data-theme="signature"] {
+  --color-surface-0: #0a0612;
+  --color-surface-1: #120c1f;
+  --color-surface-2: #1a1228;
+  --color-surface-3: #241834;
+  --color-border-subtle: rgb(220 190 255 / 0.08);
+  --color-border-strong: rgb(220 190 255 / 0.16);
+  --color-text-primary: #f0eafc;
+  --color-text-secondary: #a89bc4;
+  --color-text-tertiary: #6b6087;
+  --color-accent: #ec4899;
+  --color-accent-hover: #f472b6;
+  --color-accent-subtle: rgb(236 72 153 / 0.16);
 }

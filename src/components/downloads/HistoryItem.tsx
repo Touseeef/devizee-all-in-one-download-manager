@@ -48,14 +48,13 @@ export function HistoryItem({
                     onOpenFile();
                 }
             }}
-            className={`bg-surface-1 rounded-md p-3 flex gap-3 transition-all shadow-raised relative group cursor-pointer hover:border-border-subtle ${record.status === "error" ? "border border-status-danger/30" : ""
-                }`}
+            className="p-3 flex gap-3 relative group cursor-pointer"
             title={record.status === "completed" ? "Double-click to open file" : undefined}
         >
             <div
-                className={`w-16 aspect-video rounded-sm flex items-center justify-center shrink-0 ${record.status === "error"
+                className={`w-16 aspect-video rounded-md flex items-center justify-center shrink-0 ${record.status === "error"
                     ? "bg-status-danger-subtle/30 text-status-danger"
-                    : "bg-surface-0 text-tertiary"
+                    : "bg-surface-2 text-tertiary"
                     }`}
             >
                 {record.status === "error" ? (
@@ -68,7 +67,10 @@ export function HistoryItem({
             <div className="flex-1 min-w-0 flex flex-col justify-center">
                 <div className="flex items-center justify-between gap-3 mb-1">
                     <div className="min-w-0 flex-1">
-                        <h4 className="text-body-sm font-semibold truncate text-primary" title={record.title}>
+                        <h4
+                            className="text-body-sm font-semibold truncate text-primary"
+                            title={record.title}
+                        >
                             {record.title}
                         </h4>
                         <div className="flex items-center gap-2 mt-0.5">
@@ -80,11 +82,11 @@ export function HistoryItem({
                                 </span>
                             ) : (
                                 <>
-                                    <span className="text-caption text-secondary text-[10px] font-mono bg-surface-2 px-1.5 py-0.5 rounded">
+                                    <span className="text-caption text-tertiary text-[10px] font-mono">
                                         {formatDisplayBadge(record.format)}
                                     </span>
                                     {record.file_size && record.file_size > 0 && (
-                                        <span className="text-caption text-secondary font-mono text-[10px] bg-surface-2 px-1.5 py-0.5 rounded">
+                                        <span className="text-caption text-tertiary font-mono text-[10px]">
                                             {formatFileSize(record.file_size)}
                                         </span>
                                     )}
@@ -103,11 +105,14 @@ export function HistoryItem({
                                         ? "bg-status-danger-subtle text-status-danger"
                                         : display.colorToken === "status-warning"
                                             ? "bg-status-warning-subtle text-status-warning"
-                                            : "bg-surface-0 text-secondary"
+                                            : "bg-surface-2 text-secondary"
                                 }`}
                         >
-                            {display.colorToken === "accent" && <Loader2 size={10} className="animate-spin" />}
-                            {display.label} {record.status === "downloading" && `${record.percent.toFixed(0)}%`}
+                            {display.colorToken === "accent" && (
+                                <Loader2 size={10} className="animate-spin" />
+                            )}
+                            {display.label}{" "}
+                            {record.status === "downloading" && `${record.percent.toFixed(0)}%`}
                         </span>
 
                         {record.status === "error" && onRetry && (
@@ -117,7 +122,7 @@ export function HistoryItem({
                                     e.stopPropagation();
                                     onRetry();
                                 }}
-                                className="px-2.5 py-1 rounded-md bg-status-danger hover:bg-status-danger/90 text-white flex items-center gap-1 text-[11px] font-semibold transition-all shadow-sm active:scale-95 shrink-0"
+                                className="px-2.5 py-1 rounded-md bg-status-danger hover:bg-status-danger/90 text-white flex items-center gap-1 text-[11px] font-semibold transition-all active:scale-95 shrink-0"
                                 title="Retry download"
                             >
                                 <RotateCcw size={11} />
@@ -125,7 +130,7 @@ export function HistoryItem({
                             </button>
                         )}
 
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             {record.status === "completed" && record.file_path && (
                                 <button
                                     type="button"
@@ -133,7 +138,7 @@ export function HistoryItem({
                                         e.stopPropagation();
                                         onOpenFile();
                                     }}
-                                    className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
+                                    className="w-7 h-7 rounded-md hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors"
                                     title={tOpenFile}
                                 >
                                     <Play size={12} fill="currentColor" />
@@ -147,7 +152,7 @@ export function HistoryItem({
                                         e.stopPropagation();
                                         onOpenFolder();
                                     }}
-                                    className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
+                                    className="w-7 h-7 rounded-md hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors"
                                     title={tOpenFolder}
                                 >
                                     <Folder size={12} />
@@ -161,7 +166,7 @@ export function HistoryItem({
                                         e.stopPropagation();
                                         onDeleteFile();
                                     }}
-                                    className="w-7 h-7 rounded-md bg-surface-2 hover:bg-status-danger-subtle text-secondary hover:text-status-danger flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
+                                    className="w-7 h-7 rounded-md hover:bg-status-danger-subtle text-secondary hover:text-status-danger flex items-center justify-center transition-colors"
                                     title={tDeleteFile}
                                 >
                                     <Trash2 size={12} />
@@ -175,7 +180,7 @@ export function HistoryItem({
                                         setMenuOpen(!menuOpen);
                                     }}
                                     onBlur={() => setTimeout(() => setMenuOpen(false), 200)}
-                                    className="w-7 h-7 flex items-center justify-center text-tertiary hover:text-primary rounded-md hover:bg-surface-2 transition-colors"
+                                    className="w-7 h-7 flex items-center justify-center text-tertiary hover:text-primary rounded-md hover:bg-surface-3 transition-colors"
                                 >
                                     <MoreVertical size={14} />
                                 </button>
@@ -185,14 +190,14 @@ export function HistoryItem({
                                         {record.status === "completed" && (
                                             <button
                                                 onClick={onOpenFolder}
-                                                className="w-full text-left px-2.5 py-1.5 text-caption font-semibold text-primary hover:bg-surface-0 rounded flex items-center gap-2"
+                                                className="w-full text-left px-2.5 py-1.5 text-caption font-semibold text-primary hover:bg-surface-2 rounded flex items-center gap-2"
                                             >
                                                 <Folder size={13} /> {tOpenFolder}
                                             </button>
                                         )}
                                         <button
                                             onClick={onRemove}
-                                            className="w-full text-left px-2.5 py-1.5 text-caption font-semibold text-primary hover:bg-surface-0 rounded flex items-center gap-2"
+                                            className="w-full text-left px-2.5 py-1.5 text-caption font-semibold text-primary hover:bg-surface-2 rounded flex items-center gap-2"
                                         >
                                             <X size={13} /> {tRemoveRow}
                                         </button>
@@ -212,7 +217,7 @@ export function HistoryItem({
                 </div>
 
                 {display.progressMode !== "hidden" && (
-                    <div className="h-1 bg-surface-0 rounded-full overflow-hidden mt-0.5">
+                    <div className="h-1 bg-surface-2 rounded-full overflow-hidden mt-1">
                         {display.progressMode === "determinate" && (
                             <div
                                 className="h-full bg-accent transition-all duration-fast"
@@ -226,20 +231,32 @@ export function HistoryItem({
                 )}
 
                 {(record.status === "downloading" || record.status === "muxing") && (
-                    <div className="mt-2 px-2.5 py-1.5 rounded bg-surface-2/70 border border-border-subtle/40 grid grid-cols-3 gap-2 text-[11px] font-mono">
+                    <div className="mt-2 px-2.5 py-1.5 rounded-md bg-surface-2/70 grid grid-cols-3 gap-2 text-[11px] font-mono">
                         <div>
-                            <span className="text-[10px] uppercase text-tertiary block font-sans">Speed</span>
+                            <span className="text-[10px] uppercase text-tertiary block font-sans">
+                                Speed
+                            </span>
                             <span className="text-secondary font-medium">
-                                {record.speed && record.speed !== "0 B/s" ? record.speed : "Calculating..."}
+                                {record.speed && record.speed !== "0 B/s"
+                                    ? record.speed
+                                    : "Calculating..."}
                             </span>
                         </div>
                         <div>
-                            <span className="text-[10px] uppercase text-tertiary block font-sans">ETA</span>
-                            <span className="text-secondary font-medium">{record.eta || "--:--"}</span>
+                            <span className="text-[10px] uppercase text-tertiary block font-sans">
+                                ETA
+                            </span>
+                            <span className="text-secondary font-medium">
+                                {record.eta || "--:--"}
+                            </span>
                         </div>
                         <div>
-                            <span className="text-[10px] uppercase text-tertiary block font-sans">Progress</span>
-                            <span className="text-secondary font-medium">{record.percent.toFixed(0)}%</span>
+                            <span className="text-[10px] uppercase text-tertiary block font-sans">
+                                Progress
+                            </span>
+                            <span className="text-secondary font-medium">
+                                {record.percent.toFixed(0)}%
+                            </span>
                         </div>
                     </div>
                 )}
