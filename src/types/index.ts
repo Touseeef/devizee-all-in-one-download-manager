@@ -1,4 +1,5 @@
 import type { TaskStatus, ErrorCode } from "../status";
+
 export type FormatOption = {
     format_id: string;
     label: string;
@@ -52,3 +53,11 @@ export type DownloadRecord = {
     error_code?: ErrorCode;
     error_message?: string;
 };
+
+// Single source of truth for "what is playing, and is it playing or paused".
+export type NowPlayingState = "playing" | "paused";
+
+export type NowPlaying =
+    | { type: "none" }
+    | { type: "audio"; id: string; state: NowPlayingState }
+    | { type: "video"; id: string; state: NowPlayingState };

@@ -23,7 +23,6 @@ import { WaveformVisualizer } from "../common/WaveformVisualizer";
 
 export type VideoManagerApi = {
     // Playback
-    handleVideoEnded: () => void;
     activeVideoPlaying: boolean;
     isVideoLoading: boolean;
     videoStreamUrl: string | null;
@@ -50,6 +49,7 @@ export type VideoManagerApi = {
     setTrimEnd: (v: string) => void;
     // Actions
     handlePlayVideo: (v: { id: string; url: string; title: string; thumbnail: string; duration_string: string }) => void;
+    handleVideoEnded: () => void;
     toggleFullscreen: () => void;
     handleCloseVideoPlayer: () => void;
     exitFullscreenAndKeepPlaying: () => void;
@@ -73,9 +73,9 @@ export type VideoManagerApi = {
     formatSeconds: (secs: number) => string;
     setisAudioElementPlaying: (v: boolean) => void;
     setPreviewingId: (v: string | null) => void;
-    setNowPlaying: (v: { type: "none" | "audio" | "video"; id: string | null }) => void;
+    transitionPlayback: (next: import("../../types").NowPlaying) => void;
     setActiveVideoPlaying: (v: boolean) => void;
-    nowPlaying: { type: "none" | "audio" | "video"; id: string | null };
+    nowPlaying: import("../../types").NowPlaying;
 };
 
 export function VideoCard({
@@ -137,7 +137,7 @@ export function VideoCard({
         formatSeconds,
         setisAudioElementPlaying,
         setPreviewingId,
-        setNowPlaying,
+        transitionPlayback,
         nowPlaying,
     } = vm;
 
@@ -157,22 +157,18 @@ export function VideoCard({
                             </div>
                         ) : videoStreamUrl ? (
                             <video
-                                key={`vid-${videoInfo.id}`}
                                 ref={videoElementRef}
                                 src={videoStreamUrl}
                                 controls
                                 autoPlay={settings.autoplay}
-                                preload="auto"
                                 onEnded={handleVideoEnded}
                                 onPlay={() => {
-                                    if (audioRef.current) audioRef.current.pause();
-                                    setisAudioElementPlaying(false);
                                     setPreviewingId(null);
-                                    setNowPlaying({ type: "video", id: videoInfo.id });
+                                    transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
                                 }}
                                 onPause={() => {
                                     if (nowPlaying.type === "video") {
-                                        setNowPlaying({ type: "none", id: null });
+                                        transitionPlayback({ type: "video", id: videoInfo.id, state: "paused" });
                                     }
                                 }}
                                 onVolumeChange={(e) => {
@@ -425,7 +421,7 @@ export function VideoCard({
                                             if (audioRef.current) audioRef.current.pause();
                                             setisAudioElementPlaying(false);
                                             setPreviewingId(null);
-                                            setNowPlaying({ type: "none", id: null });
+                                            transitionPlayback({ type: "none" });
                                         }}
                                         className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-status-danger flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
                                         title="Close audio preview"
