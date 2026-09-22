@@ -26,3 +26,18 @@ dist-ssr
 src-tauri/bin/*.exe
 src-tauri/Downloads/
 native_host/*.exe
+BATCH_0_DIAGNOSTICS.txt
+
+# Devizee additions
+BATCH_0_DIAGNOSTICS.txt
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.env.*.local
+Thumbs.db
+src-tauri/gen/
+*.pem
+*.key
+*.p12
