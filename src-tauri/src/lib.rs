@@ -593,6 +593,7 @@ async fn start_download(
     scan_antivirus: Option<bool>,
     download_sections: Option<String>,
     cookies_from_browser: Option<String>,
+    filename_template: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -630,7 +631,12 @@ async fn start_download(
         _ => None,
     };
 
-    let out_template = download_dir.join("%(title)s [%(id)s].%(ext)s");
+    let template = filename_template
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("%(title)s [%(id)s].%(ext)s");
+    let out_template = download_dir.join(template);
     let out_template_str = out_template.to_string_lossy().to_string();
 
     let task_id_clone = task_id.clone();
@@ -1560,6 +1566,11 @@ async fn fetch_audio_bytes(
 }
 
 #[tauri::command]
+async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("read_local_file failed for {}: {}", path, e))
+}
+
+#[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
     let conn = state.db_conn.lock().unwrap();
 
@@ -1721,6 +1732,7 @@ pub fn run() {
             set_autostart,
             fetch_audio_bytes,
             fix_legacy_paths,
+            read_local_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

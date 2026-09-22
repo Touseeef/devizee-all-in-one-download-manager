@@ -23,6 +23,7 @@ import { WaveformVisualizer } from "../common/WaveformVisualizer";
 
 export type VideoManagerApi = {
     // Playback
+    handleVideoEnded: () => void;
     activeVideoPlaying: boolean;
     isVideoLoading: boolean;
     videoStreamUrl: string | null;
@@ -119,6 +120,7 @@ export function VideoCard({
         trimEnd,
         setTrimEnd,
         handlePlayVideo,
+        handleVideoEnded,
         toggleFullscreen,
         handleCloseVideoPlayer,
         exitFullscreenAndKeepPlaying,
@@ -155,10 +157,13 @@ export function VideoCard({
                             </div>
                         ) : videoStreamUrl ? (
                             <video
+                                key={`vid-${videoInfo.id}`}
                                 ref={videoElementRef}
                                 src={videoStreamUrl}
                                 controls
                                 autoPlay={settings.autoplay}
+                                preload="auto"
+                                onEnded={handleVideoEnded}
                                 onPlay={() => {
                                     if (audioRef.current) audioRef.current.pause();
                                     setisAudioElementPlaying(false);
@@ -187,7 +192,7 @@ export function VideoCard({
                                 ref={iframeRef}
                                 src={`https://www.youtube-nocookie.com/embed/${videoInfo.id}?enablejsapi=1&origin=${encodeURIComponent(
                                     window.location.origin
-                                )}&autoplay=${settings.autoplay ? "1" : "0"}&rel=0`}
+                                )}&autoplay=0&rel=0&modestbranding=1&playsinline=1`}
                                 title={videoInfo.title}
                                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
                                 allowFullScreen
@@ -287,31 +292,23 @@ export function VideoCard({
                         <h3 className="text-body font-semibold leading-snug line-clamp-2 text-primary">
                             {videoInfo.title}
                         </h3>
-
                         <div className="flex items-center gap-2 shrink-0">
-                            <button
-                                type="button"
-                                onClick={() => toggleAudioPreview(videoInfo.url, videoInfo.id)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold text-caption shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                title={
-                                    previewingId === videoInfo.id && isAudioElementPlaying
-                                        ? "Pause audio"
-                                        : "Preview audio before downloading"
-                                }
-                            >
-                                {isLoadingAudioId === videoInfo.id ? (
-                                    <Loader2 size={13} className="animate-spin" />
-                                ) : previewingId === videoInfo.id && isAudioElementPlaying ? (
-                                    <Pause size={13} fill="currentColor" />
-                                ) : (
-                                    <Play size={13} fill="currentColor" />
-                                )}
-                                <span>
-                                    {previewingId === videoInfo.id && isAudioElementPlaying
-                                        ? "Pause"
-                                        : t("preview_audio")}
-                                </span>
-                            </button>
+                            {/* Listen button — hidden when player strip is showing */}
+                            {previewingId !== videoInfo.id && (
+                                <button
+                                    type="button"
+                                    onClick={() => toggleAudioPreview(videoInfo.url, videoInfo.id)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold text-caption shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+                                    title="Preview audio before downloading"
+                                >
+                                    {isLoadingAudioId === videoInfo.id ? (
+                                        <Loader2 size={13} className="animate-spin" />
+                                    ) : (
+                                        <Play size={13} fill="currentColor" />
+                                    )}
+                                    <span>{t("preview_audio")}</span>
+                                </button>
+                            )}
 
                             <button
                                 type="button"
@@ -331,6 +328,7 @@ export function VideoCard({
                                 <span>{isTrimming ? "Trimming" : "Trim Clip"}</span>
                             </button>
                         </div>
+
                     </div>
 
                     <p className="text-secondary text-caption mt-0.5">{videoInfo.uploader}</p>
@@ -343,6 +341,7 @@ export function VideoCard({
                                     <WaveformVisualizer
                                         mediaElement={audioRef.current}
                                         isPlaying={isAudioElementPlaying}
+                                        onSeek={handleSeek}
                                     />
                                 </span>
                                 <span>
@@ -381,7 +380,7 @@ export function VideoCard({
                                         ) : (
                                             <Play size={12} fill="currentColor" />
                                         )}
-                                        <span>{isAudioElementPlaying ? t("pause_audio") : t("preview_audio")}</span>
+                                        <span>{isAudioElementPlaying ? "Stop" : "Play"}</span>
                                     </button>
 
                                     <button

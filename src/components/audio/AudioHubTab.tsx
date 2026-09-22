@@ -246,6 +246,7 @@ export function AudioHubTab({
                                                     <WaveformVisualizer
                                                         mediaElement={audioRef.current}
                                                         isPlaying={isAudioElementPlaying}
+                                                        onSeek={onSeek}
                                                     />
                                                 )}
                                             </div>
@@ -306,6 +307,7 @@ export function AudioHubTab({
                                     <WaveformVisualizer
                                         mediaElement={audioRef.current}
                                         isPlaying={isAudioElementPlaying}
+                                        onSeek={onSeek}
                                     />
                                 )}
                             </div>

@@ -123,7 +123,7 @@ export function SettingsTab({
                             type="text"
                             readOnly
                             value={settings.saveFolder}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate"
+                            className="settings-input w-44 truncate"
                             title={settings.saveFolder}
                         />
                         <button
@@ -150,7 +150,7 @@ export function SettingsTab({
                             readOnly
                             placeholder={`${settings.saveFolder || "Downloads/Devizee"}/Videos`}
                             value={settings.videoFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="bg-surface-2 border border-border-subtle rounded-md px-2.5 py-1.5 text-caption text-primary outline-none w-44 truncate placeholder:text-secondary"
                             title={settings.videoFolder || `${settings.saveFolder || "Downloads/Devizee"}/Videos`}
                         />
                         <button
@@ -180,7 +180,7 @@ export function SettingsTab({
                             readOnly
                             placeholder={`${settings.saveFolder || "Downloads/Devizee"}/Audio`}
                             value={settings.audioFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="settings-input"
                             title={settings.audioFolder || `${settings.saveFolder || "Downloads/Devizee"}/Audio`}
                         />
                         <button
@@ -210,7 +210,7 @@ export function SettingsTab({
                             readOnly
                             placeholder={`${settings.saveFolder || "Downloads/Devizee"}/Documents`}
                             value={settings.documentsFolder || settings.generalFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="bg-surface-2 border border-border-subtle rounded-md px-2.5 py-1.5 text-caption text-primary outline-none w-44 truncate placeholder:text-secondary"
                             title={
                                 settings.documentsFolder ||
                                 settings.generalFolder ||
@@ -247,7 +247,7 @@ export function SettingsTab({
                             readOnly
                             placeholder={`${settings.saveFolder || "Downloads/Devizee"}/Compressed`}
                             value={settings.compressedFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="settings-input"
                             title={settings.compressedFolder || `${settings.saveFolder || "Downloads/Devizee"}/Compressed`}
                         />
                         <button
@@ -277,7 +277,7 @@ export function SettingsTab({
                             readOnly
                             placeholder={`${settings.saveFolder || "Downloads/Devizee"}/Programs`}
                             value={settings.programsFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="settings-input"
                             title={settings.programsFolder || `${settings.saveFolder || "Downloads/Devizee"}/Programs`}
                         />
                         <button
@@ -310,7 +310,7 @@ export function SettingsTab({
                             readOnly
                             placeholder="System Temp (Default)"
                             value={settings.tempFolder || ""}
-                            className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none w-44 truncate placeholder:text-tertiary"
+                            className="settings-input"
                             title={settings.tempFolder || "System Temp (Default)"}
                         />
                         <button
@@ -343,9 +343,10 @@ export function SettingsTab({
                 <SettingRow title={t("settings_filename")} desc="Template used when naming downloaded files">
                     <input
                         type="text"
+                        placeholder="%(title)s.%(ext)s"
                         value={settings.filenameTemplate}
                         onChange={(e) => updateSetting("filenameTemplate", e.target.value)}
-                        className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none font-mono w-56"
+                        className="settings-input font-mono w-56"
                     />
                 </SettingRow>
 
@@ -565,7 +566,7 @@ export function SettingsTab({
                         placeholder="--throttled-rate 100K ..."
                         value={settings.customFlags}
                         onChange={(e) => updateSetting("customFlags", e.target.value)}
-                        className="bg-surface-0 border border-border-subtle rounded-md px-2.5 py-1 text-caption text-primary outline-none font-mono w-56"
+                        className="settings-input font-mono w-56"
                     />
                 </SettingRow>
 

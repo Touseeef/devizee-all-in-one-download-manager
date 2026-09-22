@@ -1,6 +1,8 @@
+// src/components/layout/ActiveStatusWidget.tsx
+import { memo } from "react";
 import { Activity } from "lucide-react";
 
-export function ActiveStatusWidget({
+function ActiveStatusWidgetInner({
     activeCount,
     queuedCount,
     collapsed = false,
@@ -79,3 +81,5 @@ export function ActiveStatusWidget({
         </div>
     );
 }
+
+export const ActiveStatusWidget = memo(ActiveStatusWidgetInner);
