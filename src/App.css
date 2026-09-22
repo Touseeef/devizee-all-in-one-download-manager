@@ -244,3 +244,66 @@
   --color-accent-hover: #f472b6;
   --color-accent-subtle: rgb(236 72 153 / 0.16);
 }
+
+/* ===================== TAB PANEL VISIBILITY ===================== */
+/* Prevents the tab-switch flash that occurs when React swaps which
+   panel is visible. The key: contain isolates each panel's paint to its
+   own subtree, and the will-change hint promotes the hidden panels to
+   their own compositor layer so they never bleed through.
+
+   Both rules must be in the stylesheet (not inline styles) — Chromium's
+   display-lock system reads `contain` during initial layout, and inline
+   styles applied post-layout are silently ignored. */
+.tab-panel-active {
+  position: relative;
+  z-index: 10;
+  contain: layout style paint;
+}
+
+.tab-panel-hidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+  contain: layout style paint;
+  will-change: opacity, visibility;
+  content-visibility: hidden;
+}
+
+/* ===================== WAVEFORM ANIMATION ===================== */
+/* SVG path animation — runs entirely on the compositor thread,
+   so it's smooth at any refresh rate and stops instantly when
+   the animation is removed. */
+@keyframes devizee-wave {
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-40px);
+  }
+}
+
+/* ===================== SETTINGS INPUTS ===================== */
+/* Single source of truth for read-only path inputs. Uses bg-surface-2
+   so they're visible against the page background in every theme. */
+.settings-input {
+  background-color: var(--color-surface-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  outline: none;
+  width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-input::placeholder {
+  color: var(--color-text-secondary);
+  opacity: 0.7;
+}

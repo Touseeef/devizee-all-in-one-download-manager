@@ -58,9 +58,19 @@ export function UrlInput({
                     onClick={async () => {
                         try {
                             const text = await readText();
+                            if (text) {
+                                setUrl(text);
+                                return;
+                            }
+                            console.warn("Tauri clipboard returned empty");
+                        } catch (e) {
+                            console.error("Tauri clipboard failed, trying web API:", e);
+                        }
+                        try {
+                            const text = await navigator.clipboard.readText();
                             if (text) setUrl(text);
                         } catch (e) {
-                            console.error("Clipboard read failed", e);
+                            console.error("Web clipboard also failed:", e);
                         }
                     }}
                     className="bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary px-2.5 rounded-md font-semibold text-caption h-full transition-colors border border-border-subtle flex items-center shadow-sm"

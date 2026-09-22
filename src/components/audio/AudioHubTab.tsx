@@ -1,3 +1,4 @@
+// src/components/audio/AudioHubTab.tsx
 import { useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -7,6 +8,11 @@ import {
     Music,
     Pause,
     Play,
+    Repeat,
+    Repeat1,
+    Shuffle,
+    SkipBack,
+    SkipForward,
     Trash2,
 } from "lucide-react";
 import type { DownloadRecord } from "../../types";
@@ -25,6 +31,17 @@ export function AudioHubTab({
     activeAudioPlaying,
     isAudioElementPlaying,
     onPlayItem,
+    onPlayPause,
+    onNext,
+    onPrev,
+    onSeek,
+    previewTime,
+    previewDuration,
+    audioShuffle,
+    audioRepeat,
+    onToggleShuffle,
+    onCycleRepeat,
+    formatSeconds,
 }: {
     t: (key: TranslationKey) => string;
     history: DownloadRecord[];
@@ -44,6 +61,17 @@ export function AudioHubTab({
     activeAudioPlaying: DownloadRecord | null;
     isAudioElementPlaying: boolean;
     onPlayItem: (item: DownloadRecord) => void;
+    onPlayPause: () => void;
+    onNext: () => void;
+    onPrev: () => void;
+    onSeek: (seconds: number) => void;
+    previewTime: number;
+    previewDuration: number;
+    audioShuffle: boolean;
+    audioRepeat: "off" | "all" | "one";
+    onToggleShuffle: () => void;
+    onCycleRepeat: () => void;
+    formatSeconds: (secs: number) => string;
 }) {
     const [audioHubUrl, setAudioHubUrl] = useState("");
     const [audioHubFormat, setAudioHubFormat] = useState("mp3");
@@ -60,10 +88,12 @@ export function AudioHubTab({
                 h.status === "muxing")
     );
 
+    const repeatActive = audioRepeat !== "off";
+
     return (
         <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
-            {/* Audio Quick Converter Card */}
-            <div className="bg-surface-1 rounded-md p-5 shadow-raised space-y-4">
+            {/* Header + Quick Converter Card */}
+            <div className="bg-surface-1 rounded-xl border border-border-subtle p-5 space-y-4">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center">
@@ -79,7 +109,7 @@ export function AudioHubTab({
                     <button
                         type="button"
                         onClick={() => openFolder(null)}
-                        className="px-3 py-1.5 rounded-md bg-surface-2 hover:bg-surface-0 text-caption font-semibold text-primary flex items-center gap-1.5 transition-colors border border-border-subtle shadow-sm"
+                        className="px-3 py-1.5 rounded-md bg-surface-2 hover:bg-surface-3 text-caption font-semibold text-primary flex items-center gap-1.5 transition-colors border border-border-subtle"
                         title="Open Audio Directory in Explorer"
                     >
                         <Folder size={13} />
@@ -116,7 +146,7 @@ export function AudioHubTab({
                             });
                             setAudioHubUrl("");
                         }}
-                        className="bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-md font-semibold text-caption transition-all disabled:opacity-40 flex items-center gap-1.5 shadow-sm"
+                        className="bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-md font-semibold text-caption transition-all disabled:opacity-40 flex items-center gap-1.5"
                     >
                         <Download size={14} />
                         <span>{t("audio_hub_rip")}</span>
@@ -134,7 +164,7 @@ export function AudioHubTab({
                     {activeConversions.map((task) => (
                         <div
                             key={task.id}
-                            className="p-3 bg-surface-1 border border-accent/30 rounded-md space-y-2 animate-in fade-in duration-fast"
+                            className="p-3 bg-surface-1 border border-accent/30 rounded-lg space-y-2 animate-in fade-in duration-fast"
                         >
                             <div className="flex items-center justify-between text-caption font-semibold">
                                 <div className="flex items-center gap-2 truncate">
@@ -150,34 +180,6 @@ export function AudioHubTab({
                                     className="h-full bg-accent transition-all duration-fast"
                                     style={{ width: `${task.percent}%` }}
                                 />
-                            </div>
-                            <div className="px-2 py-1 rounded bg-surface-2/70 border border-border-subtle/40 grid grid-cols-3 gap-2 text-[11px] font-mono">
-                                <div>
-                                    <span className="text-[10px] uppercase text-tertiary block font-sans">
-                                        Speed
-                                    </span>
-                                    <span className="text-secondary font-medium">
-                                        {task.speed && task.speed !== "0 B/s"
-                                            ? task.speed
-                                            : "Calculating..."}
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="text-[10px] uppercase text-tertiary block font-sans">
-                                        ETA
-                                    </span>
-                                    <span className="text-secondary font-medium">
-                                        {task.eta || "--:--"}
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="text-[10px] uppercase text-tertiary block font-sans">
-                                        Progress
-                                    </span>
-                                    <span className="text-secondary font-medium">
-                                        {task.percent.toFixed(0)}%
-                                    </span>
-                                </div>
                             </div>
                         </div>
                     ))}
@@ -196,7 +198,7 @@ export function AudioHubTab({
                 </div>
 
                 {audioHistory.length === 0 ? (
-                    <div className="py-12 text-center bg-surface-1 rounded-md shadow-raised space-y-2">
+                    <div className="py-12 text-center bg-surface-1 rounded-xl border border-border-subtle space-y-2">
                         <Music size={24} className="mx-auto text-tertiary" />
                         <p className="text-body-sm text-secondary font-medium">
                             {t("audio_library_empty")}
@@ -206,73 +208,193 @@ export function AudioHubTab({
                         </p>
                     </div>
                 ) : (
-                    <div className="space-y-2">
-                        {audioHistory.map((item) => (
-                            <div
-                                key={item.id}
-                                className="bg-surface-1 rounded-md p-3 shadow-raised flex items-center justify-between gap-4"
-                            >
-                                <div className="flex items-center gap-3 min-w-0">
-                                    <button
-                                        onClick={() => onPlayItem(item)}
-                                        className="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center shrink-0 hover:scale-105 transition-transform shadow-sm"
-                                    >
-                                        {activeAudioPlaying?.id === item.id && isAudioElementPlaying ? (
-                                            <Pause size={13} fill="currentColor" />
-                                        ) : (
-                                            <Play size={13} fill="currentColor" />
-                                        )}
-                                    </button>
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <p
-                                                className="text-body-sm font-semibold text-primary truncate cursor-pointer hover:text-accent"
-                                                onDoubleClick={() => openFile(item.file_path)}
-                                            >
-                                                {item.title}
-                                            </p>
-                                            {activeAudioPlaying?.id === item.id &&
-                                                isAudioElementPlaying && (
+                    <div className="bg-surface-1 rounded-xl border border-border-subtle overflow-hidden">
+                        {audioHistory.map((item) => {
+                            const isActive = activeAudioPlaying?.id === item.id;
+                            return (
+                                <div
+                                    key={item.id}
+                                    className={`flex items-center justify-between gap-4 px-4 py-3 border-b border-border-subtle last:border-b-0 transition-colors ${isActive ? "bg-accent-subtle/40" : "hover:bg-surface-2/40"
+                                        }`}
+                                >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                        <button
+                                            onClick={() => onPlayItem(item)}
+                                            className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-transform hover:scale-105 active:scale-95 ${isActive
+                                                ? "bg-accent text-white"
+                                                : "bg-surface-2 text-primary hover:bg-accent hover:text-white"
+                                                }`}
+                                            title={isActive && isAudioElementPlaying ? "Pause" : "Play"}
+                                        >
+                                            {isActive && isAudioElementPlaying ? (
+                                                <Pause size={13} fill="currentColor" />
+                                            ) : (
+                                                <Play size={13} fill="currentColor" />
+                                            )}
+                                        </button>
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2">
+                                                <p
+                                                    className={`text-body-sm font-semibold truncate cursor-pointer ${isActive ? "text-accent" : "text-primary hover:text-accent"
+                                                        }`}
+                                                    onDoubleClick={() => openFile(item.file_path)}
+                                                    title={item.title}
+                                                >
+                                                    {item.title}
+                                                </p>
+                                                {isActive && isAudioElementPlaying && (
                                                     <WaveformVisualizer
                                                         mediaElement={audioRef.current}
                                                         isPlaying={isAudioElementPlaying}
+                                                        onSeek={onSeek}
                                                     />
                                                 )}
+                                            </div>
+                                            <span className="text-caption text-tertiary text-[11px]">
+                                                {item.format.toUpperCase()}
+                                            </span>
                                         </div>
-                                        <span className="text-caption text-secondary">
-                                            {item.format.toUpperCase()}
-                                        </span>
+                                    </div>
+
+                                    {/* Always-visible actions */}
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                            onClick={() => openFile(item.file_path)}
+                                            className="w-7 h-7 rounded-md text-tertiary hover:text-primary hover:bg-surface-2 flex items-center justify-center transition-colors"
+                                            title="Open file directly"
+                                        >
+                                            <Play size={12} fill="currentColor" />
+                                        </button>
+                                        <button
+                                            onClick={() => openFolder(item.file_path)}
+                                            className="w-7 h-7 rounded-md text-tertiary hover:text-primary hover:bg-surface-2 flex items-center justify-center transition-colors"
+                                            title="Show in folder"
+                                        >
+                                            <Folder size={12} />
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteFile(item.id, item.file_path)}
+                                            className="w-7 h-7 rounded-md text-tertiary hover:text-status-danger hover:bg-status-danger-subtle flex items-center justify-center transition-colors"
+                                            title="Delete from disk"
+                                        >
+                                            <Trash2 size={12} />
+                                        </button>
                                     </div>
                                 </div>
-
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    <button
-                                        onClick={() => openFile(item.file_path)}
-                                        className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
-                                        title="Play / Open file directly"
-                                    >
-                                        <Play size={12} fill="currentColor" />
-                                    </button>
-                                    <button
-                                        onClick={() => openFolder(item.file_path)}
-                                        className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
-                                        title="Show in folder"
-                                    >
-                                        <Folder size={12} />
-                                    </button>
-                                    <button
-                                        onClick={() => handleDeleteFile(item.id, item.file_path)}
-                                        className="w-7 h-7 rounded-md bg-surface-2 hover:bg-status-danger-subtle text-secondary hover:text-status-danger flex items-center justify-center transition-colors border border-border-subtle shadow-sm"
-                                        title="Delete from disk"
-                                    >
-                                        <Trash2 size={12} />
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
+
+            {/* Player bar — appears below the library when a track is playing */}
+            {activeAudioPlaying && (
+                <div className="bg-surface-1 rounded-xl border border-accent/30 p-4 space-y-3 animate-in fade-in duration-fast">
+                    <div className="flex items-center gap-4">
+                        <div className="w-11 h-11 rounded-md bg-accent-subtle text-accent flex items-center justify-center shrink-0">
+                            <Music size={18} />
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                                <p
+                                    className="text-body-sm font-semibold text-primary truncate"
+                                    title={activeAudioPlaying.title}
+                                >
+                                    {activeAudioPlaying.title}
+                                </p>
+                                {isAudioElementPlaying && (
+                                    <WaveformVisualizer
+                                        mediaElement={audioRef.current}
+                                        isPlaying={isAudioElementPlaying}
+                                        onSeek={onSeek}
+                                    />
+                                )}
+                            </div>
+                            <p className="text-caption text-secondary">
+                                {activeAudioPlaying.format.toUpperCase()}
+                            </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                                type="button"
+                                onClick={onToggleShuffle}
+                                className={`w-8 h-8 rounded-md flex items-center justify-center transition-colors ${audioShuffle
+                                    ? "text-accent bg-accent-subtle"
+                                    : "text-secondary hover:text-primary hover:bg-surface-2"
+                                    }`}
+                                title={audioShuffle ? "Shuffle on" : "Shuffle off"}
+                            >
+                                <Shuffle size={14} />
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={onPrev}
+                                className="w-9 h-9 rounded-md text-primary hover:bg-surface-2 flex items-center justify-center transition-colors"
+                                title="Previous track"
+                            >
+                                <SkipBack size={16} fill="currentColor" />
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={onPlayPause}
+                                className="w-10 h-10 rounded-full bg-accent hover:bg-accent-hover text-white flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+                                title={isAudioElementPlaying ? "Pause" : "Play"}
+                            >
+                                {isAudioElementPlaying ? (
+                                    <Pause size={15} fill="currentColor" />
+                                ) : (
+                                    <Play size={15} fill="currentColor" className="ml-0.5" />
+                                )}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={onNext}
+                                className="w-9 h-9 rounded-md text-primary hover:bg-surface-2 flex items-center justify-center transition-colors"
+                                title="Next track"
+                            >
+                                <SkipForward size={16} fill="currentColor" />
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={onCycleRepeat}
+                                className={`w-8 h-8 rounded-md flex items-center justify-center transition-colors ${repeatActive
+                                    ? "text-accent bg-accent-subtle"
+                                    : "text-secondary hover:text-primary hover:bg-surface-2"
+                                    }`}
+                                title={
+                                    audioRepeat === "off"
+                                        ? "Repeat off"
+                                        : audioRepeat === "all"
+                                            ? "Repeat all"
+                                            : "Repeat one"
+                                }
+                            >
+                                {audioRepeat === "one" ? <Repeat1 size={14} /> : <Repeat size={14} />}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-caption text-tertiary font-mono text-[11px]">
+                        <span className="w-10 text-right">{formatSeconds(previewTime)}</span>
+                        <input
+                            type="range"
+                            min="0"
+                            max={previewDuration || 100}
+                            step="0.5"
+                            value={previewTime}
+                            onChange={(e) => onSeek(parseFloat(e.target.value))}
+                            className="flex-1 h-1 bg-surface-2 accent-accent cursor-pointer rounded-full"
+                        />
+                        <span className="w-10">{formatSeconds(previewDuration || 0)}</span>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

@@ -1,6 +1,8 @@
+// src/components/layout/SidebarNavItem.tsx
+import { memo } from "react";
 import type { ReactNode } from "react";
 
-export function SidebarNavItem({
+function SidebarNavItemInner({
     active,
     onClick,
     icon,
@@ -61,3 +63,5 @@ export function SidebarNavItem({
         </button>
     );
 }
+
+export const SidebarNavItem = memo(SidebarNavItemInner);

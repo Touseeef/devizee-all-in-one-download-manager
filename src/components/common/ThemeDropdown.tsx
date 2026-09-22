@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import {
     ArrowUpDown,
     Eye,
-    FastForward,
     Moon,
+    Palette,
     Shield,
     Sliders,
     Sparkles,
@@ -16,7 +16,7 @@ export const THEME_OPTIONS = [
     { id: "signature", label: "Signature", icon: Sparkles, desc: "" },
     { id: "oled", label: "OLED Pure Black", icon: Shield, desc: "" },
     { id: "sunset", label: "Sunset Warm", icon: Sliders, desc: "" },
-    { id: "frost", label: "Frost Indigo", icon: FastForward, desc: "" },
+    { id: "frost", label: "Frost Indigo", icon: Palette, desc: "" },
     { id: "high-contrast", label: "High Contrast", icon: Eye, desc: "" },
 ] as const;
 

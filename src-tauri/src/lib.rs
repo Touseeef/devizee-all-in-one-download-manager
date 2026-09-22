@@ -3,7 +3,12 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager,
+};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 mod db;
 mod status;
@@ -49,6 +54,18 @@ pub struct DownloadProgressPayload {
     pub error_code: Option<String>,
     pub error: Option<String>,
     pub file_path: Option<String>,
+}
+
+/// Returns extra yt-dlp args to load cookies from a browser's cookie store.
+/// Returns empty when disabled. Browser value matches yt-dlp's
+/// --cookies-from-browser spec: "chrome", "edge", "firefox", "brave", etc.
+fn cookies_args(cookies_from_browser: Option<String>) -> Vec<String> {
+    match cookies_from_browser.as_deref() {
+        Some(b) if !b.is_empty() && b != "none" => {
+            vec!["--cookies-from-browser".to_string(), b.to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Helper function to locate the active yt-dlp executable (Absolute Paths)
@@ -171,7 +188,11 @@ fn get_ffmpeg_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 /// Tauri command to inspect any URL and extract metadata & format tiers
 #[tauri::command]
-async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInfo, String> {
+async fn fetch_video_info(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<VideoInfo, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
 
     let mut cmd = Command::new(&yt_dlp_path);
@@ -184,8 +205,11 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
         "no-youtube-unavailable-videos",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -452,11 +476,11 @@ fn resolve_output_dir(
     ext: &str,
     is_audio_only: bool,
 ) -> PathBuf {
-    let default_base = app
+    let home_downloads = app
         .path()
         .download_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Devizee");
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let default_base = home_downloads.join("Devizee");
 
     let resolved_base = match base_dir {
         Some(dir) if !dir.trim().is_empty() => {
@@ -464,7 +488,11 @@ fn resolve_output_dir(
             if p.is_absolute() {
                 p
             } else {
-                default_base.join(p)
+                let trimmed = dir
+                    .trim()
+                    .trim_start_matches("Downloads/")
+                    .trim_start_matches("Downloads\\");
+                home_downloads.join(trimmed)
             }
         }
         _ => default_base,
@@ -473,7 +501,6 @@ fn resolve_output_dir(
     let ext_lower = ext.to_lowercase();
     let ext_str = ext_lower.as_str();
 
-    // Determine category subfolder name and user override
     let (default_subfolder, target_override) =
         if is_audio_only || ["mp3", "m4a", "flac", "wav", "opus", "aac"].contains(&ext_str) {
             ("Audio", audio_dir)
@@ -489,7 +516,6 @@ fn resolve_output_dir(
             ("General", None)
         };
 
-    // If user provided a specific custom path, use it. Otherwise, use base/Subfolder (e.g. Devizee/Videos)
     match target_override {
         Some(dir) if !dir.trim().is_empty() => {
             let p = PathBuf::from(dir.trim());
@@ -503,7 +529,47 @@ fn resolve_output_dir(
     }
 }
 
-/// Single Source of Truth for Output Path Resolution
+#[tauri::command]
+fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
+    let conn = state.db_conn.lock().unwrap();
+    let records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
+    let mut fixed = 0usize;
+
+    for rec in records {
+        let old_path = match &rec.file_path {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+
+        let needs_fix = old_path.contains("Downloads\\Devizee\\Downloads\\Devizee\\")
+            || old_path.contains("Downloads/Devizee/Downloads/Devizee/");
+        if !needs_fix {
+            continue;
+        }
+
+        let new_path = old_path
+            .replace(
+                "Downloads\\Devizee\\Downloads\\Devizee\\",
+                "Downloads\\Devizee\\",
+            )
+            .replace("Downloads/Devizee/Downloads/Devizee/", "Downloads/Devizee/");
+
+        let _ = db::update_download_status(
+            &conn,
+            &rec.id,
+            &rec.status,
+            rec.percent,
+            Some(&new_path),
+            None,
+            None,
+        );
+        fixed += 1;
+    }
+
+    Ok(fixed)
+}
+
+/// Starts a download (spawns yt-dlp in background thread)
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn start_download(
@@ -511,7 +577,7 @@ async fn start_download(
     url: String,
     title: String,
     format_id: String,
-    format_label: Option<String>, // Frontend passes human label
+    format_label: Option<String>,
     is_audio_only: bool,
     ext: String,
     base_dir: Option<String>,
@@ -526,6 +592,8 @@ async fn start_download(
     custom_flags: Option<String>,
     scan_antivirus: Option<bool>,
     download_sections: Option<String>,
+    cookies_from_browser: Option<String>,
+    filename_template: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -563,13 +631,17 @@ async fn start_download(
         _ => None,
     };
 
-    let out_template = download_dir.join("%(title)s [%(id)s].%(ext)s");
+    let template = filename_template
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("%(title)s [%(id)s].%(ext)s");
+    let out_template = download_dir.join(template);
     let out_template_str = out_template.to_string_lossy().to_string();
 
     let task_id_clone = task_id.clone();
     let app_clone = app.clone();
 
-    // Persist real format_id in DB, use format_label for UI string
     let record = db::DownloadRecord {
         id: task_id.clone(),
         url: url.clone(),
@@ -578,7 +650,7 @@ async fn start_download(
         status: DownloadStatus::Queued,
         percent: 0.0,
         format: format_label.unwrap_or_else(|| format_id.clone()),
-        format_id: format_id.clone(), // STABLE IDENTIFIER
+        format_id: format_id.clone(),
         date_added: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -596,6 +668,7 @@ async fn start_download(
 
     let download_dir_clone = download_dir.clone();
     let url_clone = url.clone();
+    let cookies_clone = cookies_from_browser.clone();
 
     std::thread::spawn(move || {
         let mut cmd = Command::new(&yt_dlp_path);
@@ -625,8 +698,12 @@ async fn start_download(
             cmd.args(["-P", &format!("temp:{}", tp.to_string_lossy())]);
         }
 
+        // Cookies from browser (opt-in auth for age-restricted / bot-detected videos)
+        for arg in cookies_args(cookies_clone) {
+            cmd.arg(arg);
+        }
+
         if is_audio_only {
-            // Priority 7: Audio Remux Optimization (-c copy where stream already matches container)
             let audio_selector = if ext == "m4a" || ext == "aac" {
                 "ba[ext=m4a]/ba[acodec^=mp4a]/ba/b"
             } else if ext == "opus" || ext == "webm" {
@@ -796,7 +873,6 @@ async fn start_download(
             },
         );
 
-        // Drain stderr concurrently to prevent deadlock with lossy UTF-8 reading
         let stderr = child.stderr.take().unwrap();
         let error_logs = Arc::new(Mutex::new(Vec::new()));
         let error_logs_clone = error_logs.clone();
@@ -901,7 +977,6 @@ async fn start_download(
         let status = child.wait().unwrap();
 
         if status.success() {
-            // Check if final_file_path exists; if not, check download_dir
             if let Some(ref fp) = final_file_path {
                 if !std::path::Path::new(fp).exists() {
                     if let Ok(entries) = std::fs::read_dir(&download_dir_clone) {
@@ -930,7 +1005,6 @@ async fn start_download(
                 }
             }
 
-            // Antivirus scanning if requested
             #[cfg(target_os = "windows")]
             if scan_antivirus.unwrap_or(false) {
                 if let Some(ref fp) = final_file_path {
@@ -1011,8 +1085,6 @@ async fn resolve_folder_path(
     base_dir: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    // Resolve %USERPROFILE%\Downloads without relying on Tauri's download_dir()
-    // (which has been observed to return Documents on some Windows setups).
     let home_downloads: PathBuf = {
         #[cfg(target_os = "windows")]
         {
@@ -1076,6 +1148,7 @@ async fn resolve_folder_path(
 
     Ok(target.to_string_lossy().to_string())
 }
+
 #[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1155,7 +1228,11 @@ pub struct PlaylistInfo {
 }
 
 #[tauri::command]
-async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn get_audio_stream_url(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let mut cmd = Command::new(&yt_dlp_path);
     cmd.args([
@@ -1165,8 +1242,11 @@ async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
         "--no-warnings",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
@@ -1181,7 +1261,11 @@ async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
 }
 
 #[tauri::command]
-async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn get_video_stream_url(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let mut cmd = Command::new(&yt_dlp_path);
     cmd.args([
@@ -1191,8 +1275,11 @@ async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
         "--no-warnings",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
@@ -1212,7 +1299,11 @@ async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
 }
 
 #[tauri::command]
-async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<PlaylistInfo, String> {
+async fn fetch_playlist_info(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<PlaylistInfo, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
 
     let mut cmd = Command::new(&yt_dlp_path);
@@ -1227,11 +1318,14 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
         "no-youtube-unavailable-videos",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
 
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000);
 
     let output = cmd.output().map_err(|e| e.to_string())?;
 
@@ -1320,6 +1414,7 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
 #[tauri::command]
 async fn search_youtube(
     query: String,
+    cookies_from_browser: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<PlaylistEntry>, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -1337,8 +1432,11 @@ async fn search_youtube(
         "--no-warnings",
         "--compat-options",
         "no-youtube-unavailable-videos",
-        &search_term,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&search_term);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
@@ -1410,60 +1508,12 @@ struct AppState {
     db_conn: std::sync::Mutex<rusqlite::Connection>,
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
-            let mut iter = argv.iter();
-            while let Some(arg) = iter.next() {
-                if arg == "--url" {
-                    if let Some(target) = iter.next() {
-                        let _ = app.emit("open-url", target.to_string());
-                    }
-                } else if arg.starts_with("streamgrab://download?url=") {
-                    let clean = arg.trim_start_matches("streamgrab://download?url=");
-                    let _ = app.emit("open-url", clean.to_string());
-                } else if arg.starts_with("http://") || arg.starts_with("https://") {
-                    let _ = app.emit("open-url", arg.to_string());
-                }
-            }
-        }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .setup(|app| {
-            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
-            app.manage(AppState {
-                db_conn: std::sync::Mutex::new(conn),
-            });
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            fetch_video_info,
-            fetch_playlist_info,
-            search_youtube,
-            get_audio_stream_url,
-            get_video_stream_url,
-            start_download,
-            resolve_folder_path,
-            open_file,
-            get_history,
-            hide_history_item,
-            delete_history_file,
-            set_autostart,
-            fetch_audio_bytes
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
-
 #[tauri::command]
-async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+async fn fetch_audio_bytes(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<u8>, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let ffmpeg_path = get_ffmpeg_path(&app);
 
@@ -1482,6 +1532,9 @@ async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>
         "--concurrent-fragments",
         "4",
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
     if let Some(ref ff) = ffmpeg_path {
         cmd.arg("--ffmpeg-location");
         cmd.arg(ff);
@@ -1511,11 +1564,16 @@ async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>
 
     Ok(output.stdout)
 }
+
+#[tauri::command]
+async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("read_local_file failed for {}: {}", path, e))
+}
+
 #[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
     let conn = state.db_conn.lock().unwrap();
 
-    // Fetch and check if files are missing, and compute file_size
     let mut records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     for record in &mut records {
         if record.status == DownloadStatus::Completed {
@@ -1559,4 +1617,123 @@ fn delete_history_file(
         let _ = std::fs::remove_file(path);
     }
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            let mut iter = argv.iter();
+            while let Some(arg) = iter.next() {
+                if arg == "--url" {
+                    if let Some(target) = iter.next() {
+                        let _ = app.emit("open-url", target.to_string());
+                    }
+                } else if arg.starts_with("streamgrab://download?url=") {
+                    let clean = arg.trim_start_matches("streamgrab://download?url=");
+                    let _ = app.emit("open-url", clean.to_string());
+                } else if arg.starts_with("http://") || arg.starts_with("https://") {
+                    let _ = app.emit("open-url", arg.to_string());
+                }
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let ctrl_shift_d =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyD);
+                    if shortcut == &ctrl_shift_d {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                        let _ = app.emit("global-hotkey-paste", ());
+                    }
+                })
+                .build(),
+        )
+        .setup(|app| {
+            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
+            app.manage(AppState {
+                db_conn: std::sync::Mutex::new(conn),
+            });
+
+            // System tray icon + menu
+            let open_item = MenuItem::with_id(app, "open", "Open Devizee", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+
+            let icon = app
+                .default_window_icon()
+                .ok_or("No default window icon configured")?
+                .clone();
+
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .icon(icon)
+                .tooltip("Devizee — All-In-One Download Manager")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            fetch_video_info,
+            fetch_playlist_info,
+            search_youtube,
+            get_audio_stream_url,
+            get_video_stream_url,
+            start_download,
+            resolve_folder_path,
+            open_file,
+            get_history,
+            hide_history_item,
+            delete_history_file,
+            set_autostart,
+            fetch_audio_bytes,
+            fix_legacy_paths,
+            read_local_file,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

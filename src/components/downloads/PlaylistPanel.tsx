@@ -345,7 +345,12 @@ export function PlaylistPanel({
                                                 step="0.5"
                                                 value={previewTime}
                                                 onChange={(e) => onSeek(parseFloat(e.target.value))}
-                                                className="w-full h-1 bg-surface-0 accent-accent cursor-pointer rounded-full outline-none"
+                                                className="w-full h-0.5 cursor-pointer rounded-full outline-none appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:-mt-1"
+                                                style={{
+                                                    background: `linear-gradient(to right, var(--color-status-info) 0%, var(--color-status-info) ${(previewTime / Math.max(1, previewDuration)) * 100
+                                                        }%, var(--color-surface-2) ${(previewTime / Math.max(1, previewDuration)) * 100
+                                                        }%, var(--color-surface-2) 100%)`,
+                                                }}
                                             />
                                             <div className="flex items-center justify-between">
                                                 <div className="flex items-center gap-2">
