@@ -3,7 +3,12 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager,
+};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
 mod db;
 mod status;
@@ -49,6 +54,18 @@ pub struct DownloadProgressPayload {
     pub error_code: Option<String>,
     pub error: Option<String>,
     pub file_path: Option<String>,
+}
+
+/// Returns extra yt-dlp args to load cookies from a browser's cookie store.
+/// Returns empty when disabled. Browser value matches yt-dlp's
+/// --cookies-from-browser spec: "chrome", "edge", "firefox", "brave", etc.
+fn cookies_args(cookies_from_browser: Option<String>) -> Vec<String> {
+    match cookies_from_browser.as_deref() {
+        Some(b) if !b.is_empty() && b != "none" => {
+            vec!["--cookies-from-browser".to_string(), b.to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Helper function to locate the active yt-dlp executable (Absolute Paths)
@@ -171,7 +188,11 @@ fn get_ffmpeg_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 /// Tauri command to inspect any URL and extract metadata & format tiers
 #[tauri::command]
-async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInfo, String> {
+async fn fetch_video_info(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<VideoInfo, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
 
     let mut cmd = Command::new(&yt_dlp_path);
@@ -184,15 +205,18 @@ async fn fetch_video_info(url: String, app: tauri::AppHandle) -> Result<VideoInf
         "no-youtube-unavailable-videos",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Failed to execute yt-dlp at {:?}: {}", yt_dlp_path, e))?;
+        .map_err(|e| format!("Failed to launch download engine: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -452,11 +476,11 @@ fn resolve_output_dir(
     ext: &str,
     is_audio_only: bool,
 ) -> PathBuf {
-    let default_base = app
+    let home_downloads = app
         .path()
         .download_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Devizee");
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let default_base = home_downloads.join("Devizee");
 
     let resolved_base = match base_dir {
         Some(dir) if !dir.trim().is_empty() => {
@@ -464,7 +488,11 @@ fn resolve_output_dir(
             if p.is_absolute() {
                 p
             } else {
-                default_base.join(p)
+                let trimmed = dir
+                    .trim()
+                    .trim_start_matches("Downloads/")
+                    .trim_start_matches("Downloads\\");
+                home_downloads.join(trimmed)
             }
         }
         _ => default_base,
@@ -473,7 +501,6 @@ fn resolve_output_dir(
     let ext_lower = ext.to_lowercase();
     let ext_str = ext_lower.as_str();
 
-    // Determine category subfolder name and user override
     let (default_subfolder, target_override) =
         if is_audio_only || ["mp3", "m4a", "flac", "wav", "opus", "aac"].contains(&ext_str) {
             ("Audio", audio_dir)
@@ -489,7 +516,6 @@ fn resolve_output_dir(
             ("General", None)
         };
 
-    // If user provided a specific custom path, use it. Otherwise, use base/Subfolder (e.g. Devizee/Videos)
     match target_override {
         Some(dir) if !dir.trim().is_empty() => {
             let p = PathBuf::from(dir.trim());
@@ -503,7 +529,52 @@ fn resolve_output_dir(
     }
 }
 
-/// Single Source of Truth for Output Path Resolution
+#[tauri::command]
+fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
+    // SEC-10: Handle poisoned lock gracefully instead of panicking
+    let mut conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    let records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
+    let mut fixed = 0usize;
+
+    // Edge Case: Wrap in transaction so sudden exit or crash leaves database in consistent state
+    let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+    for rec in records {
+        let old_path = match &rec.file_path {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+
+        let needs_fix = old_path.contains("Downloads\\Devizee\\Downloads\\Devizee\\")
+            || old_path.contains("Downloads/Devizee/Downloads/Devizee/");
+        if !needs_fix {
+            continue;
+        }
+
+        let new_path = old_path
+            .replace(
+                "Downloads\\Devizee\\Downloads\\Devizee\\",
+                "Downloads\\Devizee\\",
+            )
+            .replace("Downloads/Devizee/Downloads/Devizee/", "Downloads/Devizee/");
+
+        let _ = db::update_download_status(
+            &tx,
+            &rec.id,
+            &rec.status,
+            rec.percent,
+            Some(&new_path),
+            None,
+            None,
+        );
+        fixed += 1;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit transaction: {}", e))?;
+    Ok(fixed)
+}
+
+/// Starts a download (spawns yt-dlp in background thread)
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn start_download(
@@ -511,7 +582,7 @@ async fn start_download(
     url: String,
     title: String,
     format_id: String,
-    format_label: Option<String>, // Frontend passes human label
+    format_label: Option<String>,
     is_audio_only: bool,
     ext: String,
     base_dir: Option<String>,
@@ -526,6 +597,8 @@ async fn start_download(
     custom_flags: Option<String>,
     scan_antivirus: Option<bool>,
     download_sections: Option<String>,
+    cookies_from_browser: Option<String>,
+    filename_template: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -543,8 +616,14 @@ async fn start_download(
         is_audio_only,
     );
 
+    // Edge Case: Validate destination directory write access / drive connectivity
     if !download_dir.exists() {
-        let _ = std::fs::create_dir_all(&download_dir);
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            return Err(format!(
+                "Cannot access download destination '{:?}': {}. Please check folder permissions or external drive connection.",
+                download_dir, e
+            ));
+        }
     }
 
     let resolved_temp_dir = match temp_dir {
@@ -563,13 +642,39 @@ async fn start_download(
         _ => None,
     };
 
-    let out_template = download_dir.join("%(title)s [%(id)s].%(ext)s");
+    let template = filename_template
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("%(title)s [%(id)s].%(ext)s");
+
+    // SEC-7: Block path traversal in the filename template.
+    // A template like "../../Desktop/malicious%(ext)s" would escape the download dir.
+    // yt-dlp expands %(title)s from untrusted video metadata, so also pass
+    // --restrict-filenames to sanitise the expanded value on the yt-dlp side.
+    if template.contains("..") || template.contains('/') || template.contains('\\') {
+        return Err(
+            "Filename template must not contain path separators or '..'. \
+             Use yt-dlp format fields like %(title)s and %(ext)s only."
+                .to_string(),
+        );
+    }
+
+    // Edge Case: Windows 260-char MAX_PATH protection.
+    // If the template expands to a path longer than 240 chars, yt-dlp or Windows file creation
+    // can fail with OS Error 206/3/123. We cap title expansion in yt-dlp to 100 bytes max.
+    let safe_template = if template.contains("%(title)s") {
+        template.replace("%(title)s", "%(title).100B")
+    } else {
+        template.to_string()
+    };
+
+    let out_template = download_dir.join(&safe_template);
     let out_template_str = out_template.to_string_lossy().to_string();
 
     let task_id_clone = task_id.clone();
     let app_clone = app.clone();
 
-    // Persist real format_id in DB, use format_label for UI string
     let record = db::DownloadRecord {
         id: task_id.clone(),
         url: url.clone(),
@@ -578,7 +683,7 @@ async fn start_download(
         status: DownloadStatus::Queued,
         percent: 0.0,
         format: format_label.unwrap_or_else(|| format_id.clone()),
-        format_id: format_id.clone(), // STABLE IDENTIFIER
+        format_id: format_id.clone(),
         date_added: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -596,6 +701,7 @@ async fn start_download(
 
     let download_dir_clone = download_dir.clone();
     let url_clone = url.clone();
+    let cookies_clone = cookies_from_browser.clone();
 
     std::thread::spawn(move || {
         let mut cmd = Command::new(&yt_dlp_path);
@@ -618,6 +724,9 @@ async fn start_download(
             "4",
             "--compat-options",
             "no-youtube-unavailable-videos",
+            // SEC-7 (defense-in-depth): sanitise expanded template values so that
+            // untrusted video titles cannot introduce path separators into filenames.
+            "--restrict-filenames",
         ]);
 
         // Priority 9: Stage temp/.part files into separate temp folder if configured
@@ -625,8 +734,12 @@ async fn start_download(
             cmd.args(["-P", &format!("temp:{}", tp.to_string_lossy())]);
         }
 
+        // Cookies from browser (opt-in auth for age-restricted / bot-detected videos)
+        for arg in cookies_args(cookies_clone) {
+            cmd.arg(arg);
+        }
+
         if is_audio_only {
-            // Priority 7: Audio Remux Optimization (-c copy where stream already matches container)
             let audio_selector = if ext == "m4a" || ext == "aac" {
                 "ba[ext=m4a]/ba[acodec^=mp4a]/ba/b"
             } else if ext == "opus" || ext == "webm" {
@@ -682,11 +795,68 @@ async fn start_download(
             }
         }
 
+        // SEC-1: Argument injection guard.
+        // custom_flags is split by whitespace and each token is passed as a discrete
+        // Command::arg() call (no shell), but yt-dlp flags like --exec / --config-location
+        // / --batch-file can still be weaponised. Use a strict allowlist.
+        // Value-flag pairs (e.g. "--retries 3") must appear consecutively; the value
+        // following a known value-flag is admitted verbatim but is bounded to 256 chars.
         if let Some(ref flags) = custom_flags {
-            let flags_str = flags.trim();
-            if !flags_str.is_empty() {
-                for arg in flags_str.split_whitespace() {
-                    cmd.arg(arg);
+            // Flags that stand alone (no following value)
+            const ALLOWED_LONE: &[&str] = &[
+                "--geo-bypass",
+                "--no-check-certificates",
+                "--no-part",
+                "--no-playlist",
+                "--prefer-free-formats",
+                "--force-overwrites",
+                "--no-overwrites",
+                "--mark-watched",
+                "--no-mark-watched",
+            ];
+            // Flags that take exactly one value token after them
+            const ALLOWED_VALUE: &[&str] = &[
+                "--limit-rate",
+                "--proxy",
+                "--retries",
+                "--fragment-retries",
+                "--concurrent-fragments",
+                "--socket-timeout",
+                "--source-address",
+                "--sleep-interval",
+                "--max-sleep-interval",
+            ];
+
+            let tokens: Vec<&str> = flags.trim().split_whitespace().collect();
+            let mut i = 0;
+            while i < tokens.len() {
+                let tok = tokens[i];
+                if ALLOWED_LONE.contains(&tok) {
+                    cmd.arg(tok);
+                    i += 1;
+                } else if ALLOWED_VALUE.contains(&tok) {
+                    if i + 1 < tokens.len() {
+                        let val = tokens[i + 1];
+                        // Bound value length and reject any shell metacharacters
+                        let safe = val.len() <= 256
+                            && !val.contains('"')
+                            && !val.contains('\'')
+                            && !val.contains('`')
+                            && !val.contains('&')
+                            && !val.contains('|')
+                            && !val.contains(';')
+                            && !val.contains('\n');
+                        if safe {
+                            cmd.arg(tok);
+                            cmd.arg(val);
+                        }
+                        i += 2;
+                    } else {
+                        i += 1; // dangling flag with no value — skip silently
+                    }
+                } else {
+                    // Unrecognised or dangerous flag — silently dropped
+                    i += 1;
                 }
             }
         }
@@ -779,6 +949,13 @@ async fn start_download(
             }
         };
 
+        let pid = child.id();
+        if let Some(state) = app_clone.try_state::<AppState>() {
+            if let Ok(mut procs) = state.active_processes.lock() {
+                procs.insert(task_id_clone.clone(), pid);
+            }
+        }
+
         #[cfg(target_os = "windows")]
         assign_child_to_job(&child);
 
@@ -796,7 +973,6 @@ async fn start_download(
             },
         );
 
-        // Drain stderr concurrently to prevent deadlock with lossy UTF-8 reading
         let stderr = child.stderr.take().unwrap();
         let error_logs = Arc::new(Mutex::new(Vec::new()));
         let error_logs_clone = error_logs.clone();
@@ -898,10 +1074,28 @@ async fn start_download(
             }
         }
 
-        let status = child.wait().unwrap();
+        let status = child.wait();
 
-        if status.success() {
-            // Check if final_file_path exists; if not, check download_dir
+        let was_active = if let Some(state) = app_clone.try_state::<AppState>() {
+            if let Ok(mut procs) = state.active_processes.lock() {
+                procs.remove(&task_id_clone).is_some()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !was_active {
+            return;
+        }
+
+        let is_success = match status {
+            Ok(s) => s.success(),
+            Err(_) => false,
+        };
+
+        if is_success {
             if let Some(ref fp) = final_file_path {
                 if !std::path::Path::new(fp).exists() {
                     if let Ok(entries) = std::fs::read_dir(&download_dir_clone) {
@@ -930,7 +1124,6 @@ async fn start_download(
                 }
             }
 
-            // Antivirus scanning if requested
             #[cfg(target_os = "windows")]
             if scan_antivirus.unwrap_or(false) {
                 if let Some(ref fp) = final_file_path {
@@ -1011,8 +1204,6 @@ async fn resolve_folder_path(
     base_dir: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    // Resolve %USERPROFILE%\Downloads without relying on Tauri's download_dir()
-    // (which has been observed to return Documents on some Windows setups).
     let home_downloads: PathBuf = {
         #[cfg(target_os = "windows")]
         {
@@ -1076,23 +1267,42 @@ async fn resolve_folder_path(
 
     Ok(target.to_string_lossy().to_string())
 }
+
 #[tauri::command]
-async fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", &path]);
-        cmd.creation_flags(0x08000000);
-        cmd.spawn().map_err(|e| e.to_string())?;
+async fn open_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    // SEC-2: Never open files through cmd.exe / xdg-open with user-controlled paths.
+    // The opener plugin uses ShellExecuteW / xdg-open internally but does NOT invoke
+    // a shell interpreter, so shell metacharacters are inert. Additionally we block
+    // executable extensions that should never be "opened" from the download history UI.
+    let p = std::path::Path::new(&path);
+
+    // Must exist and be a regular file
+    if !p.exists() {
+        return Err("File not found".to_string());
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+    if !p.is_file() {
+        return Err("Path is not a regular file".to_string());
     }
-    Ok(())
+
+    // Block executable/script extensions — these have no legitimate reason to be
+    // "opened" from the download-history UI; the user should locate them in Explorer.
+    const DANGEROUS_EXT: &[&str] = &[
+        "exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "wsf", "com", "scr",
+        "pif", "hta", "reg", "lnk",
+    ];
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        if DANGEROUS_EXT.contains(&ext.to_lowercase().as_str()) {
+            return Err(
+                "Opening executable files is not allowed from Devizee. Use File Explorer.".to_string()
+            );
+        }
+    }
+
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1155,7 +1365,11 @@ pub struct PlaylistInfo {
 }
 
 #[tauri::command]
-async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn get_audio_stream_url(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let mut cmd = Command::new(&yt_dlp_path);
     cmd.args([
@@ -1165,8 +1379,11 @@ async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
         "--no-warnings",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
@@ -1181,7 +1398,11 @@ async fn get_audio_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
 }
 
 #[tauri::command]
-async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn get_video_stream_url(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let mut cmd = Command::new(&yt_dlp_path);
     cmd.args([
@@ -1191,8 +1412,11 @@ async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
         "--no-warnings",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
@@ -1212,7 +1436,11 @@ async fn get_video_stream_url(url: String, app: tauri::AppHandle) -> Result<Stri
 }
 
 #[tauri::command]
-async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<PlaylistInfo, String> {
+async fn fetch_playlist_info(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<PlaylistInfo, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
 
     let mut cmd = Command::new(&yt_dlp_path);
@@ -1227,11 +1455,14 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
         "no-youtube-unavailable-videos",
         "--extractor-args",
         "youtube:skip=dash,translated_subs,comments",
-        &url,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
 
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000);
 
     let output = cmd.output().map_err(|e| e.to_string())?;
 
@@ -1320,6 +1551,7 @@ async fn fetch_playlist_info(url: String, app: tauri::AppHandle) -> Result<Playl
 #[tauri::command]
 async fn search_youtube(
     query: String,
+    cookies_from_browser: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<PlaylistEntry>, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -1337,8 +1569,11 @@ async fn search_youtube(
         "--no-warnings",
         "--compat-options",
         "no-youtube-unavailable-videos",
-        &search_term,
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
+    cmd.arg(&search_term);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
@@ -1408,62 +1643,113 @@ async fn search_youtube(
 
 struct AppState {
     db_conn: std::sync::Mutex<rusqlite::Connection>,
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
-            let mut iter = argv.iter();
-            while let Some(arg) = iter.next() {
-                if arg == "--url" {
-                    if let Some(target) = iter.next() {
-                        let _ = app.emit("open-url", target.to_string());
-                    }
-                } else if arg.starts_with("streamgrab://download?url=") {
-                    let clean = arg.trim_start_matches("streamgrab://download?url=");
-                    let _ = app.emit("open-url", clean.to_string());
-                } else if arg.starts_with("http://") || arg.starts_with("https://") {
-                    let _ = app.emit("open-url", arg.to_string());
-                }
-            }
-        }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .setup(|app| {
-            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
-            app.manage(AppState {
-                db_conn: std::sync::Mutex::new(conn),
-            });
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            fetch_video_info,
-            fetch_playlist_info,
-            search_youtube,
-            get_audio_stream_url,
-            get_video_stream_url,
-            start_download,
-            resolve_folder_path,
-            open_file,
-            get_history,
-            hide_history_item,
-            delete_history_file,
-            set_autostart,
-            fetch_audio_bytes
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    active_processes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
 }
 
 #[tauri::command]
-async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+async fn pause_download(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let pid_opt = {
+        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        procs.remove(&task_id)
+    };
+
+    if let Some(pid) = pid_opt {
+        #[cfg(target_os = "windows")]
+        {
+            let mut kill_cmd = Command::new("taskkill");
+            kill_cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+            kill_cmd.creation_flags(0x08000000);
+            let _ = kill_cmd.status();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut kill_cmd = Command::new("kill");
+            kill_cmd.args(["-9", &pid.to_string()]);
+            let _ = kill_cmd.status();
+        }
+    }
+
+    {
+        let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned")?;
+        let _ = db::update_status_only(&conn, &task_id, &DownloadStatus::Interrupted);
+    }
+
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressPayload {
+            task_id,
+            percent: 0.0,
+            speed: "Paused".to_string(),
+            eta: "--".to_string(),
+            status: DownloadStatus::Interrupted,
+            error_code: None,
+            error: None,
+            file_path: None,
+        },
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_download(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let pid_opt = {
+        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        procs.remove(&task_id)
+    };
+
+    if let Some(pid) = pid_opt {
+        #[cfg(target_os = "windows")]
+        {
+            let mut kill_cmd = Command::new("taskkill");
+            kill_cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+            kill_cmd.creation_flags(0x08000000);
+            let _ = kill_cmd.status();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut kill_cmd = Command::new("kill");
+            kill_cmd.args(["-9", &pid.to_string()]);
+            let _ = kill_cmd.status();
+        }
+    }
+
+    {
+        let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned")?;
+        let _ = db::update_status_only(&conn, &task_id, &DownloadStatus::Cancelled);
+    }
+
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressPayload {
+            task_id,
+            percent: 0.0,
+            speed: "Cancelled".to_string(),
+            eta: "--".to_string(),
+            status: DownloadStatus::Cancelled,
+            error_code: None,
+            error: None,
+            file_path: None,
+        },
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn fetch_audio_bytes(
+    url: String,
+    cookies_from_browser: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<u8>, String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
     let ffmpeg_path = get_ffmpeg_path(&app);
 
@@ -1482,6 +1768,9 @@ async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>
         "--concurrent-fragments",
         "4",
     ]);
+    for arg in cookies_args(cookies_from_browser) {
+        cmd.arg(arg);
+    }
     if let Some(ref ff) = ffmpeg_path {
         cmd.arg("--ffmpeg-location");
         cmd.arg(ff);
@@ -1511,11 +1800,49 @@ async fn fetch_audio_bytes(url: String, app: tauri::AppHandle) -> Result<Vec<u8>
 
     Ok(output.stdout)
 }
+
+#[tauri::command]
+async fn read_local_file(path: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+    // SEC-3: Restrict file reads to the download directory tree.
+    // Any path that canonicalizes outside Downloads/Devizee (or the user-configured
+    // equivalent) is rejected — this prevents a compromised frontend from reading
+    // SSH keys, browser cookies, or arbitrary system files.
+
+    let p = std::path::Path::new(&path);
+
+    // Require the file to actually exist before canonicalizing
+    if !p.exists() || !p.is_file() {
+        return Err("File not found".to_string());
+    }
+
+    let canonical = p.canonicalize().map_err(|e| {
+        format!("Path resolution failed: {}", e)
+    })?;
+
+    // Determine the allowed root: system Downloads/Devizee
+    let allowed_root = app
+        .path()
+        .download_dir()
+        .map(|d| d.join("Devizee"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Try to canonicalize the allowed root; if it doesn't exist yet, use it as-is
+    let allowed_canonical = allowed_root.canonicalize().unwrap_or(allowed_root);
+
+    if !canonical.starts_with(&allowed_canonical) {
+        return Err(
+            "Access denied: file is outside the Devizee download directory".to_string()
+        );
+    }
+
+    std::fs::read(&canonical).map_err(|e| format!("read_local_file failed: {}", e))
+}
+
 #[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
-    let conn = state.db_conn.lock().unwrap();
+    // SEC-10: Handle poisoned lock gracefully
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
 
-    // Fetch and check if files are missing, and compute file_size
     let mut records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     for record in &mut records {
         if record.status == DownloadStatus::Completed {
@@ -1543,7 +1870,8 @@ fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>,
 
 #[tauri::command]
 fn hide_history_item(id: String, state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db_conn.lock().unwrap();
+    // SEC-10: Handle poisoned lock gracefully
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -1552,11 +1880,162 @@ fn delete_history_file(
     id: String,
     file_path: String,
     state: tauri::State<AppState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let conn = state.db_conn.lock().unwrap();
-    let path = std::path::Path::new(&file_path);
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
+    // SEC-6: Restrict file deletion to the download directory tree.
+    // file_path comes from the frontend and must be validated before deletion.
+    let p = std::path::Path::new(&file_path);
+    if p.exists() {
+        // Canonicalize and bounds-check before deletion
+        let canonical = p
+            .canonicalize()
+            .map_err(|e| format!("Path resolution failed: {}", e))?;
+
+        let allowed_root = app
+            .path()
+            .download_dir()
+            .map(|d| d.join("Devizee"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let allowed_canonical = allowed_root.canonicalize().unwrap_or(allowed_root);
+
+        if !canonical.starts_with(&allowed_canonical) {
+            return Err(
+                "Access denied: file is outside the Devizee download directory".to_string()
+            );
+        }
+
+        let _ = std::fs::remove_file(&canonical);
     }
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            let mut iter = argv.iter();
+            while let Some(arg) = iter.next() {
+                if arg == "--url" {
+                    if let Some(target) = iter.next() {
+                        let _ = app.emit("open-url", target.to_string());
+                    }
+                } else if arg.starts_with("streamgrab://download?url=") {
+                    // SEC-8: Validate the extracted URL before dispatching.
+                    // Only http/https URLs are valid download targets.
+                    let raw = arg.trim_start_matches("streamgrab://download?url=");
+                    // Basic percent-decode of the first layer only (URL contains encoded URL)
+                    let decoded = raw.replace("%3A", ":").replace("%2F", "/");
+                    if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                        let _ = app.emit("open-url", decoded);
+                    }
+                    // Non-http URLs (file://, javascript:, data:, etc.) are silently dropped
+                } else if arg.starts_with("http://") || arg.starts_with("https://") {
+                    // Already a validated http/https URL from the single-instance argv
+                    let _ = app.emit("open-url", arg.to_string());
+                }
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let ctrl_shift_d =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyD);
+                    if shortcut == &ctrl_shift_d {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                        let _ = app.emit("global-hotkey-paste", ());
+                    }
+                })
+                .build(),
+        )
+        .setup(|app| {
+            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
+            app.manage(AppState {
+                db_conn: std::sync::Mutex::new(conn),
+                active_processes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            });
+
+            // System tray icon + menu
+            let open_item = MenuItem::with_id(app, "open", "Open Devizee", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+
+            let icon = app
+                .default_window_icon()
+                .ok_or("No default window icon configured")?
+                .clone();
+
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .icon(icon)
+                .tooltip("Devizee — All-In-One Download Manager")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            fetch_video_info,
+            fetch_playlist_info,
+            search_youtube,
+            get_audio_stream_url,
+            get_video_stream_url,
+            start_download,
+            pause_download,
+            cancel_download,
+            resolve_folder_path,
+            open_file,
+            get_history,
+            hide_history_item,
+            delete_history_file,
+            set_autostart,
+            fetch_audio_bytes,
+            fix_legacy_paths,
+            read_local_file,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

@@ -1,125 +1,155 @@
 // src/components/common/WaveformVisualizer.tsx
 import { useEffect, useRef } from "react";
-import { globalAudioState, analysers } from "../../lib/audioContext";
 
 export function WaveformVisualizer({
     mediaElement,
     isPlaying,
+    onSeek,
+    width = 80,
+    height = 22,
+    barCount = 24,
 }: {
     mediaElement: HTMLMediaElement | null;
     isPlaying: boolean;
+    onSeek?: (seconds: number) => void;
+    width?: number;
+    height?: number;
+    barCount?: number;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const progressRef = useRef(0);
 
-    // Attach analyser once per media element
+    // Track playback position via standard HTML5 media events (0% CPU overhead, no polling RAF)
     useEffect(() => {
-        if (!mediaElement) return;
-
-        if (!globalAudioState.ctx) {
-            try {
-                const AudioContextClass =
-                    window.AudioContext || (window as any).webkitAudioContext;
-                if (AudioContextClass) globalAudioState.ctx = new AudioContextClass();
-            } catch (e) {
-                console.warn("AudioContext init error:", e);
-            }
+        if (!mediaElement) {
+            progressRef.current = 0;
+            return;
         }
 
-        if (globalAudioState.ctx && !analysers.has(mediaElement)) {
-            try {
-                const analyser = globalAudioState.ctx.createAnalyser();
-                analyser.fftSize = 512;
-                analyser.smoothingTimeConstant = 0.75;
-                const source = globalAudioState.ctx.createMediaElementSource(mediaElement);
-                source.connect(analyser);
-                analyser.connect(globalAudioState.ctx.destination);
-                analysers.set(mediaElement, analyser);
-            } catch (e) {
-                console.warn("Analyser attach bypassed:", e);
-            }
-        }
+        const updateProgress = () => {
+            const d = mediaElement.duration;
+            const c = mediaElement.currentTime;
+            progressRef.current = d && isFinite(d) && d > 0 ? c / d : 0;
+        };
+
+        updateProgress();
+        mediaElement.addEventListener("timeupdate", updateProgress);
+        mediaElement.addEventListener("seeked", updateProgress);
+        mediaElement.addEventListener("ended", updateProgress);
+        mediaElement.addEventListener("loadedmetadata", updateProgress);
+
+        return () => {
+            mediaElement.removeEventListener("timeupdate", updateProgress);
+            mediaElement.removeEventListener("seeked", updateProgress);
+            mediaElement.removeEventListener("ended", updateProgress);
+            mediaElement.removeEventListener("loadedmetadata", updateProgress);
+        };
     }, [mediaElement]);
 
+    // Animated draw loop with HiDPI support & audio physics
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-
         const ctx = canvas.getContext("2d")!;
-        const computedAccent = getComputedStyle(document.documentElement)
-            .getPropertyValue("--color-accent")
-            .trim();
-        const strokeStyle = computedAccent || "#14b8a6";
+        const dpr = window.devicePixelRatio || 1;
 
-        const W = canvas.width;
-        const H = canvas.height;
-        const MID = H / 2;
+        // Set display size vs buffer size for razor-sharp rendering on Retina/HiDPI
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        ctx.scale(dpr, dpr);
 
-        if (globalAudioState.ctx && globalAudioState.ctx.state === "suspended") {
-            globalAudioState.ctx.resume().catch(() => { });
+        // Precompute theme colors ONCE per effect run — NEVER inside the 60fps draw callback!
+        const cs = getComputedStyle(document.documentElement);
+        const accent = cs.getPropertyValue("--color-accent").trim() || "#14b8a6";
+        const inactive = cs.getPropertyValue("--color-border-strong").trim() || "#475569";
+
+        const gap = 1.5;
+        const barW = Math.max(1.5, (width - (barCount - 1) * gap) / barCount);
+        const midY = height / 2;
+
+        let raf = 0;
+        let phase = 0;
+        let last: number | null = null;
+
+        // Clean static resting state: draw clean, flat 2px rounded pills and stop RAF loop completely
+        if (!isPlaying) {
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = inactive;
+            ctx.globalAlpha = 0.35;
+            for (let i = 0; i < barCount; i++) {
+                const barH = 2;
+                const x = i * (barW + gap);
+                const y = midY - 1;
+                ctx.beginPath();
+                if (typeof ctx.roundRect === "function") {
+                    ctx.roundRect(x, y, barW, barH, 1);
+                } else {
+                    ctx.rect(x, y, barW, barH);
+                }
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+            return;
         }
 
-        const analyser = mediaElement ? analysers.get(mediaElement) : undefined;
-        const dataArray = analyser ? new Uint8Array(analyser.fftSize) : null;
+        const draw = (now: number) => {
+            raf = requestAnimationFrame(draw);
+            if (last !== null) phase += (now - last) * 0.007;
+            last = now;
 
-        let reqId = 0;
-        let t0 = performance.now();
+            ctx.clearRect(0, 0, width, height);
 
-        const drawFrame = () => {
-            reqId = requestAnimationFrame(drawFrame);
-            const t = performance.now() - t0;
+            for (let i = 0; i < barCount; i++) {
+                // Realistic multi-harmonic frequency distribution
+                // Center-weighted bass & sub-bass harmonics
+                const centerWeight = Math.sin((i / barCount) * Math.PI);
+                const s1 = Math.abs(Math.sin(phase * 1.2 + i * 0.45));
+                const s2 = Math.abs(Math.sin(phase * 2.1 + i * 0.95));
+                const s3 = Math.abs(Math.cos(phase * 0.8 + i * 1.35));
+                const s4 = Math.abs(Math.sin(phase * 3.4 + i * 0.2));
 
-            ctx.clearRect(0, 0, W, H);
-            ctx.strokeStyle = strokeStyle;
-            ctx.lineWidth = 1.4;
-            ctx.lineJoin = "round";
-            ctx.beginPath();
+                const energy = (s1 * 0.35 + s2 * 0.3 + s3 * 0.2 + s4 * 0.15) * (0.6 + centerWeight * 0.4);
+                const norm = Math.min(1, Math.max(0.12, energy));
 
-            if (isPlaying && analyser && dataArray) {
-                analyser.getByteTimeDomainData(dataArray);
+                const barH = Math.max(3, norm * height * 0.92);
+                const x = i * (barW + gap);
+                const y = midY - barH / 2;
+                const isPlayed = i / barCount <= progressRef.current;
 
-                // Detect silence — if everything hovers at 128, blend in procedural wave
-                let energy = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    energy += Math.abs(dataArray[i] - 128);
+                ctx.fillStyle = isPlayed ? accent : inactive;
+                ctx.globalAlpha = isPlayed ? 1 : 0.4;
+
+                ctx.beginPath();
+                if (typeof ctx.roundRect === "function") {
+                    ctx.roundRect(x, y, barW, barH, Math.min(barW / 2, 2));
+                } else {
+                    ctx.rect(x, y, barW, barH);
                 }
-                const silent = energy / dataArray.length < 0.8;
-
-                const step = Math.max(1, Math.floor(dataArray.length / W));
-                for (let x = 0; x < W; x++) {
-                    const idx = Math.min(dataArray.length - 1, x * step);
-                    const v = (dataArray[idx] - 128) / 128; // -1..1
-                    const wobble = silent
-                        ? Math.sin((x + t * 0.18) * 0.28) * 0.35 +
-                        Math.sin((x + t * 0.09) * 0.61) * 0.22
-                        : 0;
-                    const y = MID + (v + wobble) * (MID - 2);
-                    if (x === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-            } else {
-                // No analyser or paused — slow procedural wave so it's never dead
-                for (let x = 0; x < W; x++) {
-                    const y =
-                        MID +
-                        Math.sin((x + t * 0.06) * 0.22) * 2.2 +
-                        Math.sin((x + t * 0.03) * 0.55) * 1.4;
-                    if (x === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
+                ctx.fill();
             }
-            ctx.stroke();
+            ctx.globalAlpha = 1;
         };
 
-        drawFrame();
-        return () => cancelAnimationFrame(reqId);
-    }, [isPlaying, mediaElement]);
+        raf = requestAnimationFrame(draw);
+        return () => cancelAnimationFrame(raf);
+    }, [isPlaying, width, height, barCount]);
+
+    const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (!onSeek || !mediaElement) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const d = mediaElement.duration;
+        if (d && isFinite(d)) onSeek(ratio * d);
+    };
 
     return (
         <canvas
             ref={canvasRef}
-            width={80}
-            height={22}
-            className="opacity-90 shrink-0"
+            onClick={handleClick}
+            className={`shrink-0 ${onSeek ? "cursor-pointer" : ""}`}
+            title={onSeek ? "Click to seek" : undefined}
         />
     );
 }

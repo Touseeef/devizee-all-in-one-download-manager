@@ -139,6 +139,15 @@ pub fn hide_download(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn update_status_only(conn: &Connection, id: &str, status: &DownloadStatus) -> Result<()> {
+    let status_str = serde_json::to_string(status).unwrap().replace("\"", "");
+    conn.execute(
+        "UPDATE downloads SET status = ?1 WHERE id = ?2",
+        (&status_str, id),
+    )?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn delete_download(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM downloads WHERE id = ?1", [id])?;

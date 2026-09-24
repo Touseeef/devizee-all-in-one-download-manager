@@ -1,6 +1,14 @@
-import { useRef } from "react";
-import { Download, Loader2, Search, X } from "lucide-react";
+import { useState } from "react";
+import {
+    Clipboard,
+    Download,
+    Layers,
+    Loader2,
+    Search,
+    X,
+} from "lucide-react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { BatchUrlModal } from "./BatchUrlModal";
 
 export function UrlInput({
     url,
@@ -13,6 +21,7 @@ export function UrlInput({
     placeholder,
     labelAnalyze,
     labelAnalyzing,
+    hasActiveResult = false,
 }: {
     url: string;
     setUrl: (v: string) => void;
@@ -24,96 +33,127 @@ export function UrlInput({
     placeholder: string;
     labelAnalyze: string;
     labelAnalyzing: string;
+    hasActiveResult?: boolean;
 }) {
-    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+
+    const handlePasteClipboard = async () => {
+        let text = "";
+        try {
+            const clipText = await readText();
+            if (clipText && clipText.trim()) text = clipText.trim();
+        } catch { }
+        if (!text) {
+            try {
+                const clipText = await navigator.clipboard.readText();
+                if (clipText && clipText.trim()) text = clipText.trim();
+            } catch (e) {
+                console.error("Clipboard access failed:", e);
+            }
+        }
+        if (text) {
+            setUrl(text);
+            if (/^https?:\/\//i.test(text)) {
+                setTimeout(() => {
+                    const synthetic = { preventDefault: () => {} } as React.FormEvent;
+                    onAnalyze(synthetic);
+                }, 30);
+            }
+        }
+    };
 
     return (
-        <form onSubmit={onAnalyze} className="relative shadow-raised rounded-md bg-surface-1">
-            <div className="absolute inset-y-0 left-3.5 flex items-center pointer-events-none text-accent">
-                <Search size={18} strokeWidth={2.5} />
-            </div>
-            <input
-                type="text"
-                placeholder={placeholder}
-                className="w-full bg-surface-1 rounded-md h-12 pl-10 pr-56 text-body-sm font-medium transition-colors outline-none text-primary placeholder:text-tertiary"
-                value={url}
-                onChange={(e) => {
-                    setUrl(e.target.value);
-                    if (!e.target.value.trim()) onClear();
-                }}
-            />
-            <div className="absolute right-1.5 top-1.5 bottom-1.5 flex items-center gap-1">
-                {url && (
-                    <button
-                        type="button"
-                        onClick={onClear}
-                        className="w-7 h-7 flex items-center justify-center rounded-md text-tertiary hover:text-primary hover:bg-surface-2 transition-colors mr-0.5"
-                        title="Clear URL"
-                    >
-                        <X size={14} />
-                    </button>
-                )}
+        <div className={`w-full transition-all duration-300 ${hasActiveResult ? "pt-1 pb-2" : "py-8 max-w-3xl mx-auto text-center"}`}>
+            {/* Hero Header (Visible when no media is actively inspected) */}
+            {!hasActiveResult && (
+                <div className="mb-6 space-y-2">
+                    <h1 className="text-display font-extrabold text-primary tracking-tight">
+                        Download Any Video or Audio
+                    </h1>
+                    <p className="text-secondary text-body max-w-lg mx-auto">
+                        Paste links from YouTube, TikTok, Instagram, SoundCloud, Vimeo, and 1,000+ supported sites.
+                    </p>
+                </div>
+            )}
+
+            {/* Input Form with Outside Batch TXT and Analyze Buttons */}
+            <form onSubmit={onAnalyze} className="flex items-center gap-2.5 w-full">
+                {/* Search Bar Input Container */}
+                <div className="relative flex-1 shadow-raised rounded-xl bg-surface-1 border border-border-subtle focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20 transition-all flex items-center h-14">
+                    <div className="pl-4 pr-3 flex items-center pointer-events-none text-accent shrink-0">
+                        <Search size={20} strokeWidth={2.5} />
+                    </div>
+
+                    <input
+                        type="text"
+                        placeholder={placeholder}
+                        className="w-full bg-transparent h-full text-body font-medium transition-colors outline-none text-primary placeholder:text-tertiary truncate pr-2"
+                        value={url}
+                        onChange={(e) => {
+                            setUrl(e.target.value);
+                            if (!e.target.value.trim()) onClear();
+                        }}
+                    />
+
+                    <div className="flex items-center gap-1.5 pr-2.5 shrink-0">
+                        {url && (
+                            <button
+                                type="button"
+                                onClick={onClear}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg text-tertiary hover:text-primary hover:bg-surface-2 transition-colors cursor-pointer"
+                                title="Clear URL"
+                            >
+                                <X size={15} />
+                            </button>
+                        )}
+
+                        <button
+                            type="button"
+                            onClick={handlePasteClipboard}
+                            className="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary border border-border-subtle transition-colors cursor-pointer"
+                            title="Paste from clipboard"
+                        >
+                            <Clipboard size={16} />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Batch Links Button (Outside Field) */}
                 <button
                     type="button"
-                    onClick={async () => {
-                        try {
-                            const text = await readText();
-                            if (text) setUrl(text);
-                        } catch (e) {
-                            console.error("Clipboard read failed", e);
-                        }
-                    }}
-                    className="bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary px-2.5 rounded-md font-semibold text-caption h-full transition-colors border border-border-subtle flex items-center shadow-sm"
-                    title="Paste from clipboard"
+                    onClick={() => setIsBatchModalOpen(true)}
+                    className="h-14 px-4 rounded-xl bg-surface-1 hover:bg-surface-2 text-secondary hover:text-primary border border-border-subtle font-semibold text-caption sm:text-body-sm transition-all flex items-center gap-2 shrink-0 shadow-raised cursor-pointer active:scale-[0.98]"
+                    title="Import or paste multiple URLs for batch downloading"
                 >
-                    Paste
+                    <Layers size={16} className="text-accent" />
+                    <span className="hidden sm:inline">Batch Links</span>
                 </button>
-                <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary px-2.5 rounded-md font-semibold text-caption h-full transition-colors border border-border-subtle flex items-center shadow-sm"
-                    title="Import .txt file with URLs"
-                >
-                    Import TXT
-                </button>
-                <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept=".txt"
-                    className="hidden"
-                    onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = (evt) => {
-                            const text = evt.target?.result as string;
-                            const lines = text
-                                .split("\n")
-                                .map((l) => l.trim())
-                                .filter((l) => /^https?:\/\//i.test(l));
-                            if (fileInputRef.current) fileInputRef.current.value = "";
-                            if (lines.length > 0) onImportTxtLines(lines);
-                        };
-                        reader.readAsText(file);
-                    }}
-                />
+
+                {/* Primary Analyze Action Button */}
                 <button
                     type="submit"
                     disabled={isFetching || !url.trim()}
-                    className="bg-accent hover:bg-accent-hover text-white px-4 rounded-md font-semibold text-body-sm transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center gap-1.5 shadow-sm h-full"
+                    className="h-14 px-5 sm:px-6 rounded-xl bg-accent hover:bg-accent-hover text-white font-bold text-body-sm transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center gap-2 shadow-raised shrink-0 cursor-pointer"
                 >
                     {isFetching ? (
-                        <Loader2 size={15} className="animate-spin" />
+                        <Loader2 size={18} className="animate-spin" />
                     ) : isSearchingYoutube ? (
-                        <Search size={15} />
+                        <Search size={18} />
                     ) : (
-                        <Download size={15} strokeWidth={2.5} />
+                        <Download size={18} strokeWidth={2.5} />
                     )}
                     <span>
                         {isFetching ? (isSearchingYoutube ? "Searching..." : labelAnalyzing) : labelAnalyze}
                     </span>
                 </button>
-            </div>
-        </form>
+            </form>
+
+            {/* Batch URL Importer Dialog Modal */}
+            <BatchUrlModal
+                isOpen={isBatchModalOpen}
+                onClose={() => setIsBatchModalOpen(false)}
+                onImportUrls={(urls) => onImportTxtLines(urls)}
+            />
+        </div>
     );
 }

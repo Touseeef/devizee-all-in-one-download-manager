@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+// src/components/layout/AppShell.tsx
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 
 export function AppShell({
@@ -6,25 +7,35 @@ export function AppShell({
     mainRef,
     children,
 }: {
-    sidebar: (collapsed: boolean) => ReactNode;
+    sidebar: (collapsed: boolean, onToggleCollapse: () => void) => ReactNode;
     mainRef?: RefObject<HTMLElement | null>;
     children: ReactNode;
 }) {
-    const [collapsed, setCollapsed] = useState(false);
+    const [autoCollapsed, setAutoCollapsed] = useState(false);
+    const [manualOverride, setManualOverride] = useState<boolean | null>(null);
 
     useEffect(() => {
-        const check = () => setCollapsed(window.innerWidth < 1100);
+        const check = () => setAutoCollapsed(window.innerWidth < 1100);
         check();
         window.addEventListener("resize", check);
         return () => window.removeEventListener("resize", check);
     }, []);
 
+    const collapsed = manualOverride !== null ? manualOverride : autoCollapsed;
+
+    const onToggleCollapse = useCallback(() => {
+        setManualOverride((prev) => {
+            const current = prev !== null ? prev : autoCollapsed;
+            return !current;
+        });
+    }, [autoCollapsed]);
+
     return (
         <div className="flex h-screen bg-surface-0 text-primary font-sans antialiased overflow-hidden select-none">
-            {sidebar(collapsed)}
+            {sidebar(collapsed, onToggleCollapse)}
             <main
                 ref={mainRef}
-                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
+                className="relative flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
             >
                 {children}
             </main>

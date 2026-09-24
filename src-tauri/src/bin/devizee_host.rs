@@ -41,6 +41,12 @@ fn main() {
 }
 
 fn dispatch_url(url: &str) {
+    // SEC-4: Validate URL scheme before doing anything with it.
+    // The URL comes from the browser extension; only http/https URLs are valid targets.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return;
+    }
+
     let mut candidates = Vec::new();
 
     if let Ok(exe_path) = std::env::current_exe() {
@@ -110,15 +116,44 @@ fn dispatch_url(url: &str) {
         }
     }
 
-    // Fallback to protocol scheme if direct binary execution fails
+    // Fallback to protocol scheme if direct binary execution fails.
+    // SEC-4: Use ShellExecuteW instead of cmd /C start.
+    // ShellExecuteW dispatches the streamgrab:// URL to the registered protocol
+    // handler without invoking a shell — metacharacters in the URL are inert.
     if !launched {
-        let deep_link = format!("streamgrab://download?url={}", url);
         #[cfg(target_os = "windows")]
         {
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/C", "start", "", &deep_link]);
-            cmd.creation_flags(0x08000000);
-            let _ = cmd.spawn();
+            use std::ffi::OsStr;
+            use std::iter::once;
+            use std::os::windows::ffi::OsStrExt;
+
+            // URL-encode the http URL so it is safe as a query parameter value
+            let encoded_url = url
+                .replace('&', "%26")
+                .replace('#', "%23");
+            let deep_link = format!("streamgrab://download?url={}", encoded_url);
+
+            // Convert to wide string (null-terminated UTF-16) for ShellExecuteW
+            let wide: Vec<u16> = OsStr::new(&deep_link)
+                .encode_wide()
+                .chain(once(0u16))
+                .collect();
+            let verb: Vec<u16> = OsStr::new("open")
+                .encode_wide()
+                .chain(once(0u16))
+                .collect();
+
+            unsafe {
+                use windows_sys::Win32::UI::Shell::ShellExecuteW;
+                ShellExecuteW(
+                    0,                    // hwnd: no parent window
+                    verb.as_ptr(),        // lpOperation: "open"
+                    wide.as_ptr(),        // lpFile: the streamgrab:// URL
+                    std::ptr::null(),     // lpParameters
+                    std::ptr::null(),     // lpDirectory
+                    1,                    // nShowCmd: SW_SHOWNORMAL
+                );
+            }
         }
     }
 }

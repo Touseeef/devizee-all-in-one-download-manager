@@ -1,4 +1,5 @@
 import type { TaskStatus, ErrorCode } from "../status";
+
 export type FormatOption = {
     format_id: string;
     label: string;
@@ -52,3 +53,17 @@ export type DownloadRecord = {
     error_code?: ErrorCode;
     error_message?: string;
 };
+
+// Single source of truth for "what is playing, and is it playing or paused".
+export type NowPlayingState = "playing" | "paused";
+
+export type NowPlaying =
+    | { type: "none"; source?: "dashboard" | "multimedia" }
+    | { type: "audio"; id: string; state: NowPlayingState; source?: "dashboard" | "multimedia" }
+    | { type: "video"; id: string; state: NowPlayingState; source?: "dashboard" | "multimedia" };
+
+// Playback source context to prevent queue collisions between live playlists and local library
+export type PlaySource = "none" | "downloadedLibrary" | "livePlaylist";
+
+// Primary Navigation Tabs for Devizee Lite
+export type TabType = "dashboard" | "downloads" | "multimedia" | "settings";
