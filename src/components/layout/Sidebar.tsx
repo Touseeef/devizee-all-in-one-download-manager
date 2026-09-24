@@ -94,7 +94,7 @@ export function Sidebar({
                     {!collapsed && (
                         <div className="min-w-0 flex-1">
                             <div className="font-bold text-body-sm tracking-tight text-primary leading-tight">
-                                Devizee
+                                Devizee Lite
                             </div>
                             <div className="text-[10px] text-tertiary leading-tight truncate">
                                 Universal Video Downloader

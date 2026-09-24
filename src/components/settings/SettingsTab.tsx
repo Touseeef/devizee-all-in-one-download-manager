@@ -776,7 +776,7 @@ export function SettingsTab({
                                 </div>
                                 <div>
                                     <div className="flex items-center gap-2">
-                                        <h3 className="font-extrabold text-title-sm text-primary tracking-tight">Devizee - Universal Video Downloader</h3>
+                                        <h3 className="font-extrabold text-title-sm text-primary tracking-tight">Devizee Lite - Universal Video Downloader</h3>
                                         <span className="px-2 py-0.5 rounded-full bg-accent/15 text-accent text-[11px] font-bold">
                                             v0.2.1-lite
                                         </span>

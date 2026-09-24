@@ -1982,7 +1982,7 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
-                .tooltip("Devizee — All-In-One Download Manager")
+                .tooltip("Devizee Lite - Universal Video Downloader")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
