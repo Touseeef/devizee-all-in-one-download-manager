@@ -3,6 +3,8 @@ import type { DownloadRecord } from "../../types";
 import type { TranslationKey } from "../../lib/i18n";
 import { HistoryItem } from "./HistoryItem";
 
+import React from "react";
+
 type QueueFilter =
     | "all"
     | "video"
@@ -19,7 +21,7 @@ type SortBy =
     | "title"
     | "progress";
 
-export function ActivityList({
+export const ActivityList = React.memo(function ActivityList({
     t,
     sortedHistory,
     activitySearchQuery,
@@ -35,6 +37,9 @@ export function ActivityList({
     onRemove,
     onDeleteFile,
     onRetry,
+    onPause,
+    onResume,
+    onCancel,
 }: {
     t: (key: TranslationKey) => string;
     sortedHistory: DownloadRecord[];
@@ -51,6 +56,9 @@ export function ActivityList({
     onRemove: (id: string) => void;
     onDeleteFile: (id: string, path: string | null) => void;
     onRetry: (record: DownloadRecord) => void;
+    onPause?: (id: string) => void;
+    onResume?: (record: DownloadRecord) => void;
+    onCancel?: (id: string) => void;
 }) {
     const allSelected =
         sortedHistory.length > 0 &&
@@ -182,6 +190,9 @@ export function ActivityList({
                                         onRemove={() => onRemove(record.id)}
                                         onDeleteFile={() => onDeleteFile(record.id, record.file_path)}
                                         onRetry={() => onRetry(record)}
+                                        onPause={onPause ? () => onPause(record.id) : undefined}
+                                        onResume={onResume ? () => onResume(record) : undefined}
+                                        onCancel={onCancel ? () => onCancel(record.id) : undefined}
                                         tOpenFolder={t("open_folder")}
                                         tOpenFile={t("open_file")}
                                         tRemoveRow={t("remove_row")}
@@ -195,4 +206,4 @@ export function ActivityList({
             )}
         </div>
     );
-}
+});

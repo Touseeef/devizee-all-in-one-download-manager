@@ -19,67 +19,115 @@ export function WaveformVisualizer({
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const progressRef = useRef(0);
 
-    // Track playback position
+    // Track playback position via standard HTML5 media events (0% CPU overhead, no polling RAF)
     useEffect(() => {
-        if (!mediaElement) return;
-        let raf = 0;
-        const tick = () => {
+        if (!mediaElement) {
+            progressRef.current = 0;
+            return;
+        }
+
+        const updateProgress = () => {
             const d = mediaElement.duration;
             const c = mediaElement.currentTime;
             progressRef.current = d && isFinite(d) && d > 0 ? c / d : 0;
-            raf = requestAnimationFrame(tick);
         };
-        raf = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(raf);
+
+        updateProgress();
+        mediaElement.addEventListener("timeupdate", updateProgress);
+        mediaElement.addEventListener("seeked", updateProgress);
+        mediaElement.addEventListener("ended", updateProgress);
+        mediaElement.addEventListener("loadedmetadata", updateProgress);
+
+        return () => {
+            mediaElement.removeEventListener("timeupdate", updateProgress);
+            mediaElement.removeEventListener("seeked", updateProgress);
+            mediaElement.removeEventListener("ended", updateProgress);
+            mediaElement.removeEventListener("loadedmetadata", updateProgress);
+        };
     }, [mediaElement]);
 
-    // Animated draw loop
+    // Animated draw loop with HiDPI support & audio physics
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext("2d")!;
-        const accent = getComputedStyle(document.documentElement)
-            .getPropertyValue("--color-accent")
-            .trim() || "#14b8a6";
-        const inactive = getComputedStyle(document.documentElement)
-            .getPropertyValue("--color-text-tertiary")
-            .trim() || "#888";
+        const dpr = window.devicePixelRatio || 1;
 
-        const gap = 1;
-        const barW = (width - (barCount - 1) * gap) / barCount;
+        // Set display size vs buffer size for razor-sharp rendering on Retina/HiDPI
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        ctx.scale(dpr, dpr);
+
+        // Precompute theme colors ONCE per effect run — NEVER inside the 60fps draw callback!
+        const cs = getComputedStyle(document.documentElement);
+        const accent = cs.getPropertyValue("--color-accent").trim() || "#14b8a6";
+        const inactive = cs.getPropertyValue("--color-border-strong").trim() || "#475569";
+
+        const gap = 1.5;
+        const barW = Math.max(1.5, (width - (barCount - 1) * gap) / barCount);
         const midY = height / 2;
 
         let raf = 0;
         let phase = 0;
         let last: number | null = null;
 
+        // Clean static resting state: draw clean, flat 2px rounded pills and stop RAF loop completely
+        if (!isPlaying) {
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = inactive;
+            ctx.globalAlpha = 0.35;
+            for (let i = 0; i < barCount; i++) {
+                const barH = 2;
+                const x = i * (barW + gap);
+                const y = midY - 1;
+                ctx.beginPath();
+                if (typeof ctx.roundRect === "function") {
+                    ctx.roundRect(x, y, barW, barH, 1);
+                } else {
+                    ctx.rect(x, y, barW, barH);
+                }
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+            return;
+        }
+
         const draw = (now: number) => {
             raf = requestAnimationFrame(draw);
-            if (last !== null && isPlaying) phase += (now - last) * 0.005;
+            if (last !== null) phase += (now - last) * 0.007;
             last = now;
 
             ctx.clearRect(0, 0, width, height);
 
             for (let i = 0; i < barCount; i++) {
-                let norm: number;
-                if (isPlaying) {
-                    // Moving, complex waveform — 3 sine waves at different freqs
-                    const s1 = Math.abs(Math.sin(phase + i * 0.4));
-                    const s2 = Math.abs(Math.sin(phase * 1.7 + i * 0.9));
-                    const s3 = Math.abs(Math.sin(phase * 0.6 + i * 1.3));
-                    norm = 0.25 + s1 * 0.5 + s2 * 0.2 + s3 * 0.15;
-                } else {
-                    norm = 0.3;
-                }
+                // Realistic multi-harmonic frequency distribution
+                // Center-weighted bass & sub-bass harmonics
+                const centerWeight = Math.sin((i / barCount) * Math.PI);
+                const s1 = Math.abs(Math.sin(phase * 1.2 + i * 0.45));
+                const s2 = Math.abs(Math.sin(phase * 2.1 + i * 0.95));
+                const s3 = Math.abs(Math.cos(phase * 0.8 + i * 1.35));
+                const s4 = Math.abs(Math.sin(phase * 3.4 + i * 0.2));
 
-                const barH = Math.max(2, norm * height * 0.95);
+                const energy = (s1 * 0.35 + s2 * 0.3 + s3 * 0.2 + s4 * 0.15) * (0.6 + centerWeight * 0.4);
+                const norm = Math.min(1, Math.max(0.12, energy));
+
+                const barH = Math.max(3, norm * height * 0.92);
                 const x = i * (barW + gap);
                 const y = midY - barH / 2;
                 const isPlayed = i / barCount <= progressRef.current;
 
                 ctx.fillStyle = isPlayed ? accent : inactive;
-                ctx.globalAlpha = isPlaying ? (isPlayed ? 1 : 0.5) : 0.35;
-                ctx.fillRect(x, y, barW, barH);
+                ctx.globalAlpha = isPlayed ? 1 : 0.4;
+
+                ctx.beginPath();
+                if (typeof ctx.roundRect === "function") {
+                    ctx.roundRect(x, y, barW, barH, Math.min(barW / 2, 2));
+                } else {
+                    ctx.rect(x, y, barW, barH);
+                }
+                ctx.fill();
             }
             ctx.globalAlpha = 1;
         };
@@ -99,8 +147,6 @@ export function WaveformVisualizer({
     return (
         <canvas
             ref={canvasRef}
-            width={width}
-            height={height}
             onClick={handleClick}
             className={`shrink-0 ${onSeek ? "cursor-pointer" : ""}`}
             title={onSeek ? "Click to seek" : undefined}

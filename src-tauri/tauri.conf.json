@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Devizee — All-In-One Download Manager",
+        "title": "Devizee - Universal Video Downloader",
         "width": 1180,
         "height": 760,
         "minWidth": 1000,
@@ -25,14 +25,11 @@
         "enable": true,
         "scope": [
           "$DOWNLOAD/**",
-          "$HOME/**",
-          "$DESKTOP/**",
-          "$DOCUMENT/**",
           "$VIDEO/**",
           "$AUDIO/**",
+          "$PICTURE/**",
           "$APPDATA/**",
-          "$LOCALDATA/**",
-          "**/*"
+          "$LOCALDATA/**"
         ]
       }
     }

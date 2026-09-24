@@ -157,16 +157,15 @@ async function handleDownloadInterception(downloadItem) {
 
 // Transport: Native Messaging Primary with Protocol Fallback
 async function relayUrlToDevizee(urlStr) {
-  let cookies = [];
-  try {
-    const parsed = new URL(urlStr);
-    cookies = await chrome.cookies.getAll({ domain: parsed.hostname });
-  } catch { }
+  // SEC-9: Do NOT collect or transmit cookies here.
+  // The Tauri app uses yt-dlp's --cookies-from-browser flag, which reads cookies
+  // directly from the browser's cookie store without them ever traversing a pipe.
+  // Sending cookies via native messaging would expose session tokens unnecessarily.
 
   const payload = {
     action: "download",
-    url: urlStr,
-    cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain, path: c.path }))
+    url: urlStr
+    // cookies field intentionally omitted — see SEC-9
   };
 
   return new Promise((resolve) => {

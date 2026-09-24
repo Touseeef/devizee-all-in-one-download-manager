@@ -1,23 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
     ArrowUpDown,
-    Eye,
     Moon,
-    Palette,
     Shield,
-    Sliders,
     Sparkles,
     Sun,
 } from "lucide-react";
 
 export const THEME_OPTIONS = [
-    { id: "light", label: "Light Mode", icon: Sun, desc: "" },
-    { id: "dark", label: "Dark Mode", icon: Moon, desc: "" },
-    { id: "signature", label: "Signature", icon: Sparkles, desc: "" },
-    { id: "oled", label: "OLED Pure Black", icon: Shield, desc: "" },
-    { id: "sunset", label: "Sunset Warm", icon: Sliders, desc: "" },
-    { id: "frost", label: "Frost Indigo", icon: Palette, desc: "" },
-    { id: "high-contrast", label: "High Contrast", icon: Eye, desc: "" },
+    { id: "signature", label: "Signature", icon: Sparkles, desc: "Default dark aesthetic" },
+    { id: "light", label: "Light", icon: Sun, desc: "Daylight clean mode" },
+    { id: "frost", label: "Frost", icon: Moon, desc: "Cool dark slate" },
+    { id: "oled", label: "OLED Black", icon: Shield, desc: "Pure deep black" },
 ] as const;
 
 export function ThemeDropdown({
@@ -52,10 +46,10 @@ export function ThemeDropdown({
 
     const panelPosition =
         placement === "up"
-            ? "bottom-full mb-1.5 right-0"
+            ? "bottom-full mb-1.5 left-0"
             : placement === "right"
-                ? "left-full ml-1.5 top-0"
-                : "top-full mt-1.5 right-0";
+                ? "left-full ml-2 bottom-0"
+                : "top-full mt-1.5 left-0";
 
     return (
         <div

@@ -102,7 +102,7 @@ export const STATUS_DISPLAY: Record<TaskStatus, StatusDisplay> = {
   },
   cancelled: {
     label: "Cancelled",
-    colorToken: "text-tertiary",
+    colorToken: "status-warning",
     progressMode: "hidden",
     isTerminal: true,
   },

@@ -201,7 +201,7 @@ export function PlaylistPanel({
                         </div>
                     </div>
 
-                    <div className="max-h-80 overflow-y-auto overflow-x-hidden space-y-2.5 px-2 py-1.5">
+                    <div className="space-y-2.5 py-1.5">
                         {playlistInfo.entries.map((entry, idx) => {
                             const isSelected = selectedIds.has(entry.id);
                             const isThisPreviewing = previewingId === entry.id;

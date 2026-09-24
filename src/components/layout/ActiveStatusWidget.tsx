@@ -17,17 +17,17 @@ function ActiveStatusWidgetInner({
     if (collapsed) {
         return (
             <div
-                className="mx-2 mb-2 p-2 rounded-md bg-surface-2 border border-border-subtle flex items-center justify-center"
+                className="mx-2 mb-2 p-2 rounded-md bg-surface-2 border border-border-subtle flex items-center justify-center relative cursor-default"
                 title={
                     total === 0
                         ? "No active downloads"
                         : `${activeCount} Downloading · ${queuedCount} Queued`
                 }
             >
-                <span
-                    className={`w-2 h-2 rounded-full ${isActive ? "bg-accent animate-pulse" : "bg-tertiary"
-                        }`}
-                />
+                <Activity size={15} className={isActive ? "text-accent animate-pulse" : "text-tertiary"} />
+                {isActive && (
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent animate-ping" />
+                )}
             </div>
         );
     }

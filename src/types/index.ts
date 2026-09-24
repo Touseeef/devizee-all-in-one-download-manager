@@ -58,6 +58,12 @@ export type DownloadRecord = {
 export type NowPlayingState = "playing" | "paused";
 
 export type NowPlaying =
-    | { type: "none" }
-    | { type: "audio"; id: string; state: NowPlayingState }
-    | { type: "video"; id: string; state: NowPlayingState };
+    | { type: "none"; source?: "dashboard" | "multimedia" }
+    | { type: "audio"; id: string; state: NowPlayingState; source?: "dashboard" | "multimedia" }
+    | { type: "video"; id: string; state: NowPlayingState; source?: "dashboard" | "multimedia" };
+
+// Playback source context to prevent queue collisions between live playlists and local library
+export type PlaySource = "none" | "downloadedLibrary" | "livePlaylist";
+
+// Primary Navigation Tabs for Devizee Lite
+export type TabType = "dashboard" | "downloads" | "multimedia" | "settings";

@@ -7,12 +7,18 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node & Frontend Build
 node_modules
 dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Rust & Cargo Build Artifacts
+target/
+src-tauri/target/
+Cargo.lock
+
+# Editor & OS files
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -22,22 +28,30 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+Thumbs.db
 
+# Binaries & Download Directories
 src-tauri/bin/*.exe
 src-tauri/Downloads/
 native_host/*.exe
-BATCH_0_DIAGNOSTICS.txt
+*.part
+*.ytdl
 
-# Devizee additions
-BATCH_0_DIAGNOSTICS.txt
+# Database & Credentials
 *.db
 *.db-wal
 *.db-shm
 .env
 .env.local
 .env.*.local
-Thumbs.db
-src-tauri/gen/
 *.pem
 *.key
 *.p12
+
+# Diagnostics & Internal
+BATCH_0_DIAGNOSTICS.txt
+src-tauri/gen/
+ROADMAP.md
+implementation_plan.md
+.gemini/
+

@@ -216,7 +216,7 @@ async fn fetch_video_info(
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Failed to execute yt-dlp at {:?}: {}", yt_dlp_path, e))?;
+        .map_err(|e| format!("Failed to launch download engine: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -531,9 +531,13 @@ fn resolve_output_dir(
 
 #[tauri::command]
 fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
-    let conn = state.db_conn.lock().unwrap();
+    // SEC-10: Handle poisoned lock gracefully instead of panicking
+    let mut conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
     let records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     let mut fixed = 0usize;
+
+    // Edge Case: Wrap in transaction so sudden exit or crash leaves database in consistent state
+    let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     for rec in records {
         let old_path = match &rec.file_path {
@@ -555,7 +559,7 @@ fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
             .replace("Downloads/Devizee/Downloads/Devizee/", "Downloads/Devizee/");
 
         let _ = db::update_download_status(
-            &conn,
+            &tx,
             &rec.id,
             &rec.status,
             rec.percent,
@@ -566,6 +570,7 @@ fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
         fixed += 1;
     }
 
+    tx.commit().map_err(|e| format!("Failed to commit transaction: {}", e))?;
     Ok(fixed)
 }
 
@@ -611,8 +616,14 @@ async fn start_download(
         is_audio_only,
     );
 
+    // Edge Case: Validate destination directory write access / drive connectivity
     if !download_dir.exists() {
-        let _ = std::fs::create_dir_all(&download_dir);
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            return Err(format!(
+                "Cannot access download destination '{:?}': {}. Please check folder permissions or external drive connection.",
+                download_dir, e
+            ));
+        }
     }
 
     let resolved_temp_dir = match temp_dir {
@@ -636,7 +647,29 @@ async fn start_download(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("%(title)s [%(id)s].%(ext)s");
-    let out_template = download_dir.join(template);
+
+    // SEC-7: Block path traversal in the filename template.
+    // A template like "../../Desktop/malicious%(ext)s" would escape the download dir.
+    // yt-dlp expands %(title)s from untrusted video metadata, so also pass
+    // --restrict-filenames to sanitise the expanded value on the yt-dlp side.
+    if template.contains("..") || template.contains('/') || template.contains('\\') {
+        return Err(
+            "Filename template must not contain path separators or '..'. \
+             Use yt-dlp format fields like %(title)s and %(ext)s only."
+                .to_string(),
+        );
+    }
+
+    // Edge Case: Windows 260-char MAX_PATH protection.
+    // If the template expands to a path longer than 240 chars, yt-dlp or Windows file creation
+    // can fail with OS Error 206/3/123. We cap title expansion in yt-dlp to 100 bytes max.
+    let safe_template = if template.contains("%(title)s") {
+        template.replace("%(title)s", "%(title).100B")
+    } else {
+        template.to_string()
+    };
+
+    let out_template = download_dir.join(&safe_template);
     let out_template_str = out_template.to_string_lossy().to_string();
 
     let task_id_clone = task_id.clone();
@@ -691,6 +724,9 @@ async fn start_download(
             "4",
             "--compat-options",
             "no-youtube-unavailable-videos",
+            // SEC-7 (defense-in-depth): sanitise expanded template values so that
+            // untrusted video titles cannot introduce path separators into filenames.
+            "--restrict-filenames",
         ]);
 
         // Priority 9: Stage temp/.part files into separate temp folder if configured
@@ -759,11 +795,68 @@ async fn start_download(
             }
         }
 
+        // SEC-1: Argument injection guard.
+        // custom_flags is split by whitespace and each token is passed as a discrete
+        // Command::arg() call (no shell), but yt-dlp flags like --exec / --config-location
+        // / --batch-file can still be weaponised. Use a strict allowlist.
+        // Value-flag pairs (e.g. "--retries 3") must appear consecutively; the value
+        // following a known value-flag is admitted verbatim but is bounded to 256 chars.
         if let Some(ref flags) = custom_flags {
-            let flags_str = flags.trim();
-            if !flags_str.is_empty() {
-                for arg in flags_str.split_whitespace() {
-                    cmd.arg(arg);
+            // Flags that stand alone (no following value)
+            const ALLOWED_LONE: &[&str] = &[
+                "--geo-bypass",
+                "--no-check-certificates",
+                "--no-part",
+                "--no-playlist",
+                "--prefer-free-formats",
+                "--force-overwrites",
+                "--no-overwrites",
+                "--mark-watched",
+                "--no-mark-watched",
+            ];
+            // Flags that take exactly one value token after them
+            const ALLOWED_VALUE: &[&str] = &[
+                "--limit-rate",
+                "--proxy",
+                "--retries",
+                "--fragment-retries",
+                "--concurrent-fragments",
+                "--socket-timeout",
+                "--source-address",
+                "--sleep-interval",
+                "--max-sleep-interval",
+            ];
+
+            let tokens: Vec<&str> = flags.trim().split_whitespace().collect();
+            let mut i = 0;
+            while i < tokens.len() {
+                let tok = tokens[i];
+                if ALLOWED_LONE.contains(&tok) {
+                    cmd.arg(tok);
+                    i += 1;
+                } else if ALLOWED_VALUE.contains(&tok) {
+                    if i + 1 < tokens.len() {
+                        let val = tokens[i + 1];
+                        // Bound value length and reject any shell metacharacters
+                        let safe = val.len() <= 256
+                            && !val.contains('"')
+                            && !val.contains('\'')
+                            && !val.contains('`')
+                            && !val.contains('&')
+                            && !val.contains('|')
+                            && !val.contains(';')
+                            && !val.contains('\n');
+                        if safe {
+                            cmd.arg(tok);
+                            cmd.arg(val);
+                        }
+                        i += 2;
+                    } else {
+                        i += 1; // dangling flag with no value — skip silently
+                    }
+                } else {
+                    // Unrecognised or dangerous flag — silently dropped
+                    i += 1;
                 }
             }
         }
@@ -855,6 +948,13 @@ async fn start_download(
                 return;
             }
         };
+
+        let pid = child.id();
+        if let Some(state) = app_clone.try_state::<AppState>() {
+            if let Ok(mut procs) = state.active_processes.lock() {
+                procs.insert(task_id_clone.clone(), pid);
+            }
+        }
 
         #[cfg(target_os = "windows")]
         assign_child_to_job(&child);
@@ -974,9 +1074,28 @@ async fn start_download(
             }
         }
 
-        let status = child.wait().unwrap();
+        let status = child.wait();
 
-        if status.success() {
+        let was_active = if let Some(state) = app_clone.try_state::<AppState>() {
+            if let Ok(mut procs) = state.active_processes.lock() {
+                procs.remove(&task_id_clone).is_some()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !was_active {
+            return;
+        }
+
+        let is_success = match status {
+            Ok(s) => s.success(),
+            Err(_) => false,
+        };
+
+        if is_success {
             if let Some(ref fp) = final_file_path {
                 if !std::path::Path::new(fp).exists() {
                     if let Ok(entries) = std::fs::read_dir(&download_dir_clone) {
@@ -1150,22 +1269,40 @@ async fn resolve_folder_path(
 }
 
 #[tauri::command]
-async fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", &path]);
-        cmd.creation_flags(0x08000000);
-        cmd.spawn().map_err(|e| e.to_string())?;
+async fn open_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    // SEC-2: Never open files through cmd.exe / xdg-open with user-controlled paths.
+    // The opener plugin uses ShellExecuteW / xdg-open internally but does NOT invoke
+    // a shell interpreter, so shell metacharacters are inert. Additionally we block
+    // executable extensions that should never be "opened" from the download history UI.
+    let p = std::path::Path::new(&path);
+
+    // Must exist and be a regular file
+    if !p.exists() {
+        return Err("File not found".to_string());
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+    if !p.is_file() {
+        return Err("Path is not a regular file".to_string());
     }
-    Ok(())
+
+    // Block executable/script extensions — these have no legitimate reason to be
+    // "opened" from the download-history UI; the user should locate them in Explorer.
+    const DANGEROUS_EXT: &[&str] = &[
+        "exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "wsf", "com", "scr",
+        "pif", "hta", "reg", "lnk",
+    ];
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        if DANGEROUS_EXT.contains(&ext.to_lowercase().as_str()) {
+            return Err(
+                "Opening executable files is not allowed from Devizee. Use File Explorer.".to_string()
+            );
+        }
+    }
+
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1506,6 +1643,105 @@ async fn search_youtube(
 
 struct AppState {
     db_conn: std::sync::Mutex<rusqlite::Connection>,
+    active_processes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
+}
+
+#[tauri::command]
+async fn pause_download(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let pid_opt = {
+        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        procs.remove(&task_id)
+    };
+
+    if let Some(pid) = pid_opt {
+        #[cfg(target_os = "windows")]
+        {
+            let mut kill_cmd = Command::new("taskkill");
+            kill_cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+            kill_cmd.creation_flags(0x08000000);
+            let _ = kill_cmd.status();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut kill_cmd = Command::new("kill");
+            kill_cmd.args(["-9", &pid.to_string()]);
+            let _ = kill_cmd.status();
+        }
+    }
+
+    {
+        let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned")?;
+        let _ = db::update_status_only(&conn, &task_id, &DownloadStatus::Interrupted);
+    }
+
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressPayload {
+            task_id,
+            percent: 0.0,
+            speed: "Paused".to_string(),
+            eta: "--".to_string(),
+            status: DownloadStatus::Interrupted,
+            error_code: None,
+            error: None,
+            file_path: None,
+        },
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_download(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let pid_opt = {
+        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        procs.remove(&task_id)
+    };
+
+    if let Some(pid) = pid_opt {
+        #[cfg(target_os = "windows")]
+        {
+            let mut kill_cmd = Command::new("taskkill");
+            kill_cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+            kill_cmd.creation_flags(0x08000000);
+            let _ = kill_cmd.status();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut kill_cmd = Command::new("kill");
+            kill_cmd.args(["-9", &pid.to_string()]);
+            let _ = kill_cmd.status();
+        }
+    }
+
+    {
+        let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned")?;
+        let _ = db::update_status_only(&conn, &task_id, &DownloadStatus::Cancelled);
+    }
+
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressPayload {
+            task_id,
+            percent: 0.0,
+            speed: "Cancelled".to_string(),
+            eta: "--".to_string(),
+            status: DownloadStatus::Cancelled,
+            error_code: None,
+            error: None,
+            file_path: None,
+        },
+    );
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1566,13 +1802,46 @@ async fn fetch_audio_bytes(
 }
 
 #[tauri::command]
-async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| format!("read_local_file failed for {}: {}", path, e))
+async fn read_local_file(path: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+    // SEC-3: Restrict file reads to the download directory tree.
+    // Any path that canonicalizes outside Downloads/Devizee (or the user-configured
+    // equivalent) is rejected — this prevents a compromised frontend from reading
+    // SSH keys, browser cookies, or arbitrary system files.
+
+    let p = std::path::Path::new(&path);
+
+    // Require the file to actually exist before canonicalizing
+    if !p.exists() || !p.is_file() {
+        return Err("File not found".to_string());
+    }
+
+    let canonical = p.canonicalize().map_err(|e| {
+        format!("Path resolution failed: {}", e)
+    })?;
+
+    // Determine the allowed root: system Downloads/Devizee
+    let allowed_root = app
+        .path()
+        .download_dir()
+        .map(|d| d.join("Devizee"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Try to canonicalize the allowed root; if it doesn't exist yet, use it as-is
+    let allowed_canonical = allowed_root.canonicalize().unwrap_or(allowed_root);
+
+    if !canonical.starts_with(&allowed_canonical) {
+        return Err(
+            "Access denied: file is outside the Devizee download directory".to_string()
+        );
+    }
+
+    std::fs::read(&canonical).map_err(|e| format!("read_local_file failed: {}", e))
 }
 
 #[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
-    let conn = state.db_conn.lock().unwrap();
+    // SEC-10: Handle poisoned lock gracefully
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
 
     let mut records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     for record in &mut records {
@@ -1601,7 +1870,8 @@ fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>,
 
 #[tauri::command]
 fn hide_history_item(id: String, state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db_conn.lock().unwrap();
+    // SEC-10: Handle poisoned lock gracefully
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -1610,12 +1880,33 @@ fn delete_history_file(
     id: String,
     file_path: String,
     state: tauri::State<AppState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let conn = state.db_conn.lock().unwrap();
-    let path = std::path::Path::new(&file_path);
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
+    // SEC-6: Restrict file deletion to the download directory tree.
+    // file_path comes from the frontend and must be validated before deletion.
+    let p = std::path::Path::new(&file_path);
+    if p.exists() {
+        // Canonicalize and bounds-check before deletion
+        let canonical = p
+            .canonicalize()
+            .map_err(|e| format!("Path resolution failed: {}", e))?;
+
+        let allowed_root = app
+            .path()
+            .download_dir()
+            .map(|d| d.join("Devizee"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let allowed_canonical = allowed_root.canonicalize().unwrap_or(allowed_root);
+
+        if !canonical.starts_with(&allowed_canonical) {
+            return Err(
+                "Access denied: file is outside the Devizee download directory".to_string()
+            );
+        }
+
+        let _ = std::fs::remove_file(&canonical);
     }
+    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -1634,9 +1925,17 @@ pub fn run() {
                         let _ = app.emit("open-url", target.to_string());
                     }
                 } else if arg.starts_with("streamgrab://download?url=") {
-                    let clean = arg.trim_start_matches("streamgrab://download?url=");
-                    let _ = app.emit("open-url", clean.to_string());
+                    // SEC-8: Validate the extracted URL before dispatching.
+                    // Only http/https URLs are valid download targets.
+                    let raw = arg.trim_start_matches("streamgrab://download?url=");
+                    // Basic percent-decode of the first layer only (URL contains encoded URL)
+                    let decoded = raw.replace("%3A", ":").replace("%2F", "/");
+                    if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                        let _ = app.emit("open-url", decoded);
+                    }
+                    // Non-http URLs (file://, javascript:, data:, etc.) are silently dropped
                 } else if arg.starts_with("http://") || arg.starts_with("https://") {
+                    // Already a validated http/https URL from the single-instance argv
                     let _ = app.emit("open-url", arg.to_string());
                 }
             }
@@ -1668,6 +1967,7 @@ pub fn run() {
             let conn = db::init_db(app.handle()).expect("Failed to initialize database");
             app.manage(AppState {
                 db_conn: std::sync::Mutex::new(conn),
+                active_processes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             });
 
             // System tray icon + menu
@@ -1724,6 +2024,8 @@ pub fn run() {
             get_audio_stream_url,
             get_video_stream_url,
             start_download,
+            pause_download,
+            cancel_download,
             resolve_folder_path,
             open_file,
             get_history,

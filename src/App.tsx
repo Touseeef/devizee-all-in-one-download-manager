@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core"; import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -15,6 +15,8 @@ import type {
   PlaylistInfo,
   DownloadRecord,
   NowPlaying,
+  PlaySource,
+  TabType,
 } from "./types";
 import {
   parseTimeToSeconds,
@@ -25,15 +27,14 @@ import {
   isAudioFormat,
 } from "./lib/formatClassify";
 import { createTranslator } from "./lib/i18n";
-import { globalAudioState } from "./lib/audioContext";
+import { globalAudioState, routeAudioDevice, applyEqualizerPreset } from "./lib/audioContext";
 
 import { ConfirmDialog } from "./components/common/ConfirmDialog";
-import { StatCard } from "./components/downloads/StatCard";
 import { SettingsTab } from "./components/settings/SettingsTab";
-import { AudioHubTab } from "./components/audio/AudioHubTab";
+import { MultimediaTab } from "./components/media/MultimediaTab";
+import { DownloadsTab } from "./components/downloads/DownloadsTab";
 import { UrlInput } from "./components/downloads/UrlInput";
 import { SearchResults } from "./components/downloads/SearchResults";
-import { ActivityList } from "./components/downloads/ActivityList";
 import { VideoCard } from "./components/downloads/VideoCard";
 import { PlaylistPanel } from "./components/downloads/PlaylistPanel";
 import { BatchProgress } from "./components/downloads/BatchProgress";
@@ -43,18 +44,21 @@ import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { AppShell } from "./components/layout/AppShell";
 import { Sidebar } from "./components/layout/Sidebar";
 import { ClipboardHud } from "./components/hud/ClipboardHud";
+import { BatchQueuePanel, type BatchItem } from "./components/downloads/BatchQueuePanel";
 
 
 export default function App() {
   const isHud = window.location.search.includes("hud=true");
 
   // Navigation & Tabs
-  const [activeTab, setActiveTab] = useState<"downloads" | "audio" | "settings">("downloads");
+  const [activeTab, setActiveTab] = useState<TabType>("dashboard");
+  const [playSource, setPlaySource] = useState<PlaySource>("none");
   const [url, setUrl] = useState("");
   const [isFetching, setIsFetching] = useState(false);
   const [isLoadingPlaylist, setIsLoadingPlaylist] = useState(false);
   const [fetchError, setFetchError] = useState("");
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [batchQueueItems, setBatchQueueItems] = useState<BatchItem[]>([]);
   const [showPreviews, setShowPreviews] = useState(true);
   const [duplicateDialog, setDuplicateDialog] = useState<DuplicateDialogState | null>(null);
   const [selectedHistoryItems, setSelectedHistoryItems] = useState<Set<string>>(new Set());
@@ -127,27 +131,57 @@ export default function App() {
   // taking over fires that element's native onPause — which would call
   // us back with "I was paused" and overwrite the newer state. We
   // detect that cross-media pause and refuse to regress.
-  const transitionPlayback = useCallback((next: NowPlaying) => {
-    setNowPlaying((prev) => {
-      if (prev.type === "video" && next.type === "audio" && next.state === "paused") {
-        return prev;
-      }
-      if (prev.type === "audio" && next.type === "video" && next.state === "paused") {
-        return prev;
-      }
-      return next;
-    });
+  // Mirrors `nowPlaying` so transitionPlayback can read the current value
+  // synchronously — React state is async, and we need to reject echoes
+  // before side effects fire.
+  const nowPlayingRef = useRef<NowPlaying>({ type: "none" });
 
-    if (next.type === "video") {
+  const transitionPlayback = useCallback((next: NowPlaying) => {
+    const prev = nowPlayingRef.current;
+
+    // Cross-media pause echo guard: when video takes over we pause the
+    // audio element, which fires audio's native onPause. That echo would
+    // otherwise pause the video we just started. Same for the reverse.
+    if (prev.type === "video" && next.type === "audio" && next.state === "paused") return;
+    if (prev.type === "audio" && next.type === "video" && next.state === "paused") return;
+
+    const source = next.source || (next.type !== "none" ? "dashboard" : undefined);
+    const enrichedNext: NowPlaying = { ...next, source };
+
+    nowPlayingRef.current = enrichedNext;
+    setNowPlaying(enrichedNext);
+
+    if (source === "multimedia") {
+      setPlaySource("downloadedLibrary");
+      // Stop all Dashboard playback (YouTube iframe and HTML5 video)
+      sendIframeCommand("pauseVideo");
+      if (videoElementRef.current && !videoElementRef.current.paused) {
+        videoElementRef.current.pause();
+      }
+      setActiveVideoPlaying(false);
+      // Stop Dashboard audio preview
       if (audioRef.current && !audioRef.current.paused) {
         audioRef.current.pause();
       }
       setisAudioElementPlaying(false);
-    } else if (next.type === "audio") {
-      if (videoElementRef.current && !videoElementRef.current.paused) {
-        videoElementRef.current.pause();
+      setPreviewingId(null);
+    } else {
+      if (next.type !== "none") {
+        setPlaySource("livePlaylist");
       }
-      sendIframeCommand("pauseVideo");
+      if (next.type === "video") {
+        if (audioRef.current && !audioRef.current.paused) {
+          audioRef.current.pause();
+        }
+        setisAudioElementPlaying(false);
+        setPreviewingId(null);
+      } else if (next.type === "audio") {
+        if (videoElementRef.current && !videoElementRef.current.paused) {
+          videoElementRef.current.pause();
+        }
+        sendIframeCommand("pauseVideo");
+        setActiveVideoPlaying(false);
+      }
     }
   }, [sendIframeCommand]);
   // In-Line Audio Preview & Scrubbing State
@@ -192,21 +226,14 @@ export default function App() {
   const handleDeviceChange = async (deviceId: string) => {
     setSelectedAudioDevice(deviceId);
     try {
-      const audioEl = audioRef.current as any;
-      if (audioEl && typeof audioEl.setSinkId === "function") {
-        await audioEl.setSinkId(deviceId);
-      }
-
-      const videoEl = videoElementRef.current as any;
-      if (videoEl && typeof videoEl.setSinkId === "function") {
-        await videoEl.setSinkId(deviceId);
-      }
+      await routeAudioDevice(deviceId, audioRef.current);
+      await routeAudioDevice(deviceId, videoElementRef.current);
     } catch (e) {
       console.error("Audio routing failed", e);
     }
   };
 
-  // --- NEW: Synchronous AudioContext Unlocker ---
+  // Synchronous AudioContext Unlocker
   const unlockAudioContext = () => {
     if (!globalAudioState.ctx) {
       try { globalAudioState.ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); } catch (e) { }
@@ -215,6 +242,17 @@ export default function App() {
       globalAudioState.ctx.resume().catch(() => { });
     }
   };
+
+  // Global Equalizer Preset State (Persisted)
+  const [selectedEqPreset, setSelectedEqPreset] = useState<string>(() => {
+    return localStorage.getItem("devizee_eq_preset") || "flat";
+  });
+
+  const handleEqPresetChange = (presetId: string) => {
+    setSelectedEqPreset(presetId);
+    applyEqualizerPreset(presetId);
+  };
+
 
   // Global Volume State (Persisted)
   const [volume, setVolume] = useState<number>(() => {
@@ -240,6 +278,15 @@ export default function App() {
   const [audioQueuePos, setAudioQueuePos] = useState(0);
   const [audioShuffle, setAudioShuffle] = useState(false);
   const [audioRepeat, setAudioRepeat] = useState<"off" | "all" | "one">("off");
+
+  const stopAudioPlayback = useCallback(() => {
+    if (audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+    }
+    setisAudioElementPlaying(false);
+    setPreviewingId(null);
+    setActiveAudioPlaying(null);
+  }, []);
 
   // History, Queue Filtering & Sorting
   const [history, setHistory] = useState<DownloadRecord[]>([]);
@@ -365,12 +412,11 @@ export default function App() {
   }, []);
 
   // Single Consolidated Volume Controller
+  const volumeDebounceTimer = useRef<any>(null);
   const handleVolumeChange = (newVol: number) => {
     const clamped = Math.max(0, Math.min(1, newVol));
     setVolume(clamped);
     setIsMuted(clamped === 0);
-    localStorage.setItem("devizee_volume", clamped.toString());
-    updateSetting("volume", clamped);
     if (audioRef.current) audioRef.current.volume = clamped;
     if (videoElementRef.current) videoElementRef.current.volume = clamped;
     sendIframeCommand("setVolume", [Math.round(clamped * 100)]);
@@ -379,6 +425,11 @@ export default function App() {
     } else {
       sendIframeCommand("unMute");
     }
+    if (volumeDebounceTimer.current) clearTimeout(volumeDebounceTimer.current);
+    volumeDebounceTimer.current = setTimeout(() => {
+      localStorage.setItem("devizee_volume", clamped.toString());
+      updateSetting("volume", clamped);
+    }, 250);
   };
 
   const toggleMute = () => {
@@ -441,58 +492,7 @@ export default function App() {
       .catch((err) => console.error("[AudioHub] Play failed:", err));
   }, [sendIframeCommand, transitionPlayback, isMuted, volume]);
 
-  const playAudioFromLibrary = (item: DownloadRecord) => {
-    unlockAudioContext();
 
-    // Toggle: same track + playing → pause
-    if (activeAudioPlaying?.id === item.id && isAudioElementPlaying) {
-      audioRef.current?.pause();
-      setisAudioElementPlaying(false);
-      return;
-    }
-
-    // Toggle: same track + paused → resume
-    if (activeAudioPlaying?.id === item.id && audioRef.current) {
-      audioRef.current.play()
-        .then(() => setisAudioElementPlaying(true))
-        .catch(() => { });
-      return;
-    }
-
-    if (!item.file_path) return;
-
-    // Build a fresh queue from the audio library
-    const lib = history.filter(
-      (h) => h.status === "completed" && isAudioFormat(h.format)
-    );
-    if (lib.length === 0) return;
-
-    let ordered = [...lib];
-    if (audioShuffle) {
-      for (let i = ordered.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
-      }
-    }
-
-    const startIdx = ordered.findIndex((x) => x.id === item.id);
-    setAudioQueue(ordered);
-    setAudioQueuePos(startIdx >= 0 ? startIdx : 0);
-    playAudioItemNow(item);
-  };
-
-  // Transport controls
-  const toggleAudioPlayPause = useCallback(() => {
-    if (!audioRef.current) return;
-    if (isAudioElementPlaying) {
-      audioRef.current.pause();
-      setisAudioElementPlaying(false);
-    } else {
-      audioRef.current.play()
-        .then(() => setisAudioElementPlaying(true))
-        .catch(() => { });
-    }
-  }, [isAudioElementPlaying]);
 
   const audioNext = useCallback(() => {
     if (audioQueue.length === 0) return;
@@ -533,15 +533,59 @@ export default function App() {
     );
   };
 
+  // Global UI Zoom state with persistence
+  const [zoomLevel, setZoomLevel] = useState<number>(() => {
+    const saved = localStorage.getItem("devizee_zoom");
+    return saved ? Math.min(140, Math.max(75, parseInt(saved, 10) || 100)) : 100;
+  });
+
+  useEffect(() => {
+    (document.documentElement.style as any).zoom = "";
+    document.documentElement.style.fontSize = `${(zoomLevel / 100) * 16}px`;
+  }, [zoomLevel]);
+
   // Keyboard Shortcuts Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Block Ctrl+R / Cmd+R and F5 to maintain native desktop application feel
+      if (((e.ctrlKey || e.metaKey) && (e.key === "r" || e.key === "R")) || e.key === "F5") {
+        e.preventDefault();
+        return;
+      }
+
+      // Global IDE-style zoom shortcuts
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+" || e.key === "Add")) {
+        e.preventDefault();
+        setZoomLevel((prev) => {
+          const next = Math.min(140, prev + 5);
+          localStorage.setItem("devizee_zoom", String(next));
+          return next;
+        });
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "-" || e.key === "_" || e.key === "Subtract")) {
+        e.preventDefault();
+        setZoomLevel((prev) => {
+          const next = Math.max(75, prev - 5);
+          localStorage.setItem("devizee_zoom", String(next));
+          return next;
+        });
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+        e.preventDefault();
+        setZoomLevel(100);
+        localStorage.setItem("devizee_zoom", "100");
+        return;
+      }
+
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) {
         return; // Do not intercept while typing
       }
 
       if (e.code === "Space") {
+        if (nowPlaying.source === "multimedia") return;
         e.preventDefault();
         if (nowPlaying.type === "video" && videoElementRef.current) {
           if (videoElementRef.current.paused) videoElementRef.current.play();
@@ -555,22 +599,36 @@ export default function App() {
           }
         }
       } else if (e.code === "ArrowLeft") {
+        if (nowPlaying.source === "multimedia") return;
         e.preventDefault();
+        const delta = (e.shiftKey || e.ctrlKey) ? 60 : 10;
         if (nowPlaying.type === "video" && videoElementRef.current) {
-          videoElementRef.current.currentTime = Math.max(0, videoElementRef.current.currentTime - 5);
+          videoElementRef.current.currentTime = Math.max(0, videoElementRef.current.currentTime - delta);
+        } else if (nowPlaying.type === "video") {
+          sendIframeCommand("seekRelative", [-delta]);
         } else if (nowPlaying.type === "audio" && audioRef.current) {
-          handleSeekRelative(-5);
+          handleSeekRelative(-delta);
         }
       } else if (e.code === "ArrowRight") {
+        if (nowPlaying.source === "multimedia") return;
         e.preventDefault();
+        const delta = (e.shiftKey || e.ctrlKey) ? 60 : 10;
         if (nowPlaying.type === "video" && videoElementRef.current) {
           videoElementRef.current.currentTime = Math.min(
             videoElementRef.current.duration || 86400,
-            videoElementRef.current.currentTime + 5
+            videoElementRef.current.currentTime + delta
           );
+        } else if (nowPlaying.type === "video") {
+          sendIframeCommand("seekRelative", [delta]);
         } else if (nowPlaying.type === "audio" && audioRef.current) {
-          handleSeekRelative(5);
+          handleSeekRelative(delta);
         }
+      } else if (e.code === "ArrowUp") {
+        e.preventDefault();
+        handleVolumeChange(Math.min(1, volume + 0.05));
+      } else if (e.code === "ArrowDown") {
+        e.preventDefault();
+        handleVolumeChange(Math.max(0, volume - 0.05));
       } else if (e.code === "Escape") {
         if (document.fullscreenElement) {
           e.preventDefault();
@@ -585,6 +643,18 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [nowPlaying, isAudioElementPlaying, volume, isMuted]);
+
+  // Block default browser contextmenu across desktop app except inside text inputs (Image 5 fix)
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target?.tagName !== "INPUT" && target?.tagName !== "TEXTAREA" && !target?.isContentEditable) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("contextmenu", handleContextMenu);
+    return () => window.removeEventListener("contextmenu", handleContextMenu);
+  }, []);
 
   // Browse Folder via plugin-dialog
   const handleBrowseFolder = async (key: "saveFolder" | "videoFolder" | "audioFolder" | "documentsFolder" | "generalFolder" | "compressedFolder" | "programsFolder" | "tempFolder") => {
@@ -631,14 +701,6 @@ export default function App() {
       console.error("Failed to play chime", e);
     }
   };
-  // Guard against tab-switch playback side-effects
-  useEffect(() => {
-    // When switching tabs, ensure we don't trigger accidental autoplay
-    if (activeTab !== "downloads") {
-      if (videoElementRef.current) videoElementRef.current.pause();
-      sendIframeCommand("pauseVideo");
-    }
-  }, [activeTab]);
 
   // Translation helper
   const t = createTranslator(settings.language);
@@ -763,6 +825,13 @@ export default function App() {
     try {
       const recs: DownloadRecord[] = await invoke("get_history");
       setHistory(recs);
+      if (playSource === "downloadedLibrary") {
+        setAudioQueue((prev) => {
+          if (prev.length === 0) return prev;
+          const map = new Map(recs.map((r) => [r.id, r]));
+          return prev.map((item) => map.get(item.id) || item);
+        });
+      }
     } catch (e) {
       console.error("Failed to load history", e);
     }
@@ -783,27 +852,39 @@ export default function App() {
   }, []);
 
 
-  // Listen to YouTube iframe state changes so nowPlaying reflects reality.
+  // Listen to YouTube iframe state changes so nowPlaying and audio exclusivity reflect reality.
+
+
+  // Video playback time tracking ticker
   useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      try {
-        const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
-        if (data?.event === "onStateChange" && data?.info !== undefined) {
-          const ytState = data.info;
-          if (ytState === 1 && videoInfo) {
-            transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
-          } else if (ytState === 2 && videoInfo) {
-            transitionPlayback({ type: "video", id: videoInfo.id, state: "paused" });
-          } else if (ytState === 0) {
-            setActiveVideoPlaying(false);
-            transitionPlayback({ type: "none" });
-          }
+    if (!activeVideoPlaying || nowPlaying.type !== "video" || nowPlaying.state !== "playing") return;
+    const interval = setInterval(() => {
+      if (videoElementRef.current) {
+        setPreviewTime(videoElementRef.current.currentTime);
+        if (videoElementRef.current.duration) {
+          setPreviewDuration(videoElementRef.current.duration);
         }
-      } catch { }
+      }
+      // Removed the 'else' block that artificially increments previewTime for iframes.
+      // We now strictly rely on YouTube's 'infoDelivery' messages to update previewTime.
+    }, 500);
+    return () => clearInterval(interval);
+  }, [activeVideoPlaying, nowPlaying]);
+
+  // Window blur listener: when user clicks inside YouTube iframe, window blurs to iframe
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      if (document.activeElement === iframeRef.current) {
+        stopAudioPlayback();
+        if (videoInfo) {
+          transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
+        }
+      }
     };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [videoInfo, transitionPlayback]);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => window.removeEventListener("blur", handleWindowBlur);
+  }, [stopAudioPlayback, videoInfo, transitionPlayback]);
+
 
   useEffect(() => {
     loadHistory();
@@ -816,13 +897,24 @@ export default function App() {
         const oldStatus = idx !== -1 ? prev[idx].status : null;
 
         if (p.status === "completed" && oldStatus !== "completed") {
-          completedBatch.current.push(p.task_id);
+          if (!completedBatch.current.includes(p.task_id)) {
+            completedBatch.current.push(p.task_id);
+          }
           clearTimeout(notificationTimer.current);
           notificationTimer.current = setTimeout(flushNotifications, 1800);
         } else if (p.status === "error" && oldStatus !== "error") {
-          errorBatch.current.push(p.task_id);
+          if (!errorBatch.current.includes(p.task_id)) {
+            errorBatch.current.push(p.task_id);
+          }
           clearTimeout(notificationTimer.current);
           notificationTimer.current = setTimeout(flushNotifications, 1800);
+        } else if (p.status === "interrupted" && oldStatus !== "interrupted") {
+          if (settings.showNotifications) {
+            sendNotification({
+              title: "Devizee - Download Interrupted",
+              body: "A download was interrupted. Open the Downloads tab to resume, restart, or cancel it.",
+            });
+          }
         }
 
         if (idx === -1) {
@@ -855,6 +947,11 @@ export default function App() {
   // In-App Video Playback Trigger (Plays video on thumbnail click)
   const handlePlayVideo = async (targetVideo: { id: string; url: string; title: string; thumbnail: string; duration_string: string }) => {
     unlockAudioContext();
+    setPlaySource("livePlaylist");
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    setisAudioElementPlaying(false);
     setPreviewingId(null);
     setActiveAudioPlaying(null);
     transitionPlayback({ type: "video", id: targetVideo.id, state: "playing" });
@@ -879,11 +976,21 @@ export default function App() {
         .then(info => setVideoInfo(info))
         .catch(err => console.error(err));
     }
+    setShowPreviews(true);
 
     // Smooth scroll to top of workspace
     mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
 
     setActiveVideoPlaying(true);
+
+    // Fast-Path for YouTube: Instant player activation without 4-7s yt-dlp latency
+    const isYouTube = /youtu(\.be|be\.com)/i.test(targetVideo.url) || /^[a-zA-Z0-9_-]{11}$/.test(targetVideo.id);
+    if (isYouTube) {
+      setVideoStreamUrl(null);
+      setIsVideoLoading(false);
+      return;
+    }
+
     setIsVideoLoading(true);
 
     // If stream URL is already cached, start immediate playback
@@ -895,6 +1002,10 @@ export default function App() {
 
     try {
       const streamUrl = await invoke<string>("get_video_stream_url", { url: targetVideo.url });
+      if (videoStreamCache.current.size >= 20) {
+        const firstKey = videoStreamCache.current.keys().next().value;
+        if (firstKey) videoStreamCache.current.delete(firstKey);
+      }
       videoStreamCache.current.set(targetVideo.id, streamUrl);
       setVideoStreamUrl(streamUrl);
     } catch (err) {
@@ -950,6 +1061,7 @@ export default function App() {
 
     audioRef.current.pause();
     setActiveAudioPlaying(null); // Fix: Clear Audio Hub state
+    setPlaySource(playlistInfo ? "livePlaylist" : "none");
     setPreviewingId(songId);
     setisAudioElementPlaying(false);
     setPreviewTime(0);
@@ -1052,6 +1164,19 @@ export default function App() {
   // If autoplay is on and we're inside a playlist, advance to the next
   // selected entry. Otherwise clear state.
   const handleVideoEnded = useCallback(() => {
+    if (audioRepeat === "one") {
+      if (videoElementRef.current) {
+        videoElementRef.current.currentTime = 0;
+        videoElementRef.current.play().catch(() => {});
+        if (videoInfo) transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
+      } else {
+        sendIframeCommand("seekTo", [0, true]);
+        sendIframeCommand("playVideo");
+        if (videoInfo) transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
+      }
+      return;
+    }
+
     if (!settings.autoplay) {
       setActiveVideoPlaying(false);
       transitionPlayback({ type: "none" });
@@ -1068,25 +1193,50 @@ export default function App() {
             return;
           }
         }
+        if (audioRepeat === "all" && entries.length > 0) {
+          for (let i = 0; i <= currentIdx; i++) {
+            if (selectedPlaylistItems.has(entries[i].id)) {
+              handlePlayVideo(entries[i]);
+              return;
+            }
+          }
+        }
       }
     }
 
     setActiveVideoPlaying(false);
     transitionPlayback({ type: "none" });
-  }, [settings.autoplay, playlistInfo, videoInfo, selectedPlaylistItems, handlePlayVideo, transitionPlayback]);
+  }, [settings.autoplay, playlistInfo, videoInfo, selectedPlaylistItems, handlePlayVideo, transitionPlayback, audioRepeat, sendIframeCommand]);
 
   const handleSeek = (seconds: number) => {
-    if (audioRef.current) {
+    if (audioRef.current && isAudioElementPlaying) {
       audioRef.current.currentTime = seconds;
+      setPreviewTime(seconds);
+    } else if (activeVideoPlaying) {
+      if (videoElementRef.current) {
+        videoElementRef.current.currentTime = seconds;
+      } else {
+        sendIframeCommand("seekTo", [seconds, true]);
+      }
       setPreviewTime(seconds);
     }
   };
 
   function handleSeekRelative(delta: number) {
-    if (audioRef.current) {
+    if (audioRef.current && isAudioElementPlaying) {
       const total = audioRef.current.duration || 0;
       const nextTime = Math.max(0, Math.min(total, audioRef.current.currentTime + delta));
       audioRef.current.currentTime = nextTime;
+      setPreviewTime(nextTime);
+    } else if (activeVideoPlaying) {
+      const total = videoInfo?.duration || previewDuration || 86400;
+      const cur = videoElementRef.current ? videoElementRef.current.currentTime : previewTime;
+      const nextTime = Math.max(0, Math.min(total, cur + delta));
+      if (videoElementRef.current) {
+        videoElementRef.current.currentTime = nextTime;
+      } else {
+        sendIframeCommand("seekTo", [nextTime, true]);
+      }
       setPreviewTime(nextTime);
     }
   }
@@ -1148,9 +1298,10 @@ export default function App() {
     setVideoInfo(null);
     setPlaylistInfo(null);
     setSelectedPlaylistItems(new Set());
+    setActiveCardTaskId(null);
     setActiveVideoPlaying(false);
     setVideoStreamUrl(null);
-    setActiveCardTaskId(null);
+    setIsVideoLoading(false);
     setIsFetching(true);
 
     const listMatch = clean.match(/[?&]list=([^&]+)/);
@@ -1208,9 +1359,6 @@ export default function App() {
           if (info.duration_string && info.duration_string !== "--:--") {
             setTrimEnd(info.duration_string);
           }
-          if (settings.autoplay) {
-            handlePlayVideo(info);
-          }
         }
         await plPromise;
       } else if (videoId) {
@@ -1219,17 +1367,11 @@ export default function App() {
         if (info.duration_string && info.duration_string !== "--:--") {
           setTrimEnd(info.duration_string);
         }
-        if (settings.autoplay) {
-          handlePlayVideo(info);
-        }
       } else {
         const info = await invoke<VideoInfo>("fetch_video_info", { url: clean });
         setVideoInfo(info);
         if (info.duration_string && info.duration_string !== "--:--") {
           setTrimEnd(info.duration_string);
-        }
-        if (settings.autoplay) {
-          handlePlayVideo(info);
         }
       }
     } catch (err: any) {
@@ -1245,57 +1387,76 @@ export default function App() {
   };
 
   const handleImportTxtLines = async (lines: string[]) => {
-    const maxConcurrency = settings.maxParallel || 3;
-    let currentIndex = 0;
+    if (lines.length === 0) return;
 
-    const processQueue = async () => {
-      while (currentIndex < lines.length) {
-        const currentHistory = await invoke<DownloadRecord[]>("get_history");
-        const active = currentHistory.filter(
-          (h) =>
-            h.status === "downloading" ||
-            h.status === "muxing" ||
-            h.status === "starting" ||
-            h.status === "fetching_metadata"
-        ).length;
-
-        if (active >= maxConcurrency) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-
-        const line = lines[currentIndex++];
-        if (!line) break;
-
-        try {
-          const info = await invoke<VideoInfo>("fetch_video_info", { url: line });
-          const presetLabel =
-            batchPreset === "1080p"
-              ? "1080p Video"
-              : batchPreset === "720p"
-                ? "720p Video"
-                : batchPreset === "480p"
-                  ? "480p Video"
-                  : batchPreset === "mp3"
-                    ? "MP3 Audio"
-                    : "M4A Audio";
-          handleStartDownload(
-            batchFormatId,
-            batchExt,
-            batchIsAudio,
-            info,
-            `TXT Import (${presetLabel})`,
-            "keep_both"
-          );
-        } catch (err) {
-          console.error("Failed to fetch info for", line, err);
-        }
-      }
+    const defaultFmt: FormatOption = {
+      format_id: "bestvideo[height<=1080]+bestaudio/best",
+      label: "1080p (Full HD)",
+      ext: "mp4",
+      is_audio_only: false,
+      resolution: null,
+      filesize_approx: null,
     };
 
-    for (let i = 0; i < maxConcurrency; i++) {
-      processQueue();
+    const newItems: BatchItem[] = lines.map((line, idx) => {
+      let hostname = "Web";
+      try {
+        hostname = new URL(line).hostname.replace(/^www\./, "");
+      } catch {}
+
+      return {
+        id: `batch-${Date.now()}-${idx}`,
+        url: line,
+        title: line,
+        thumbnail: "",
+        site: hostname,
+        format: defaultFmt,
+      };
+    });
+
+    setBatchQueueItems((prev) => [...prev, ...newItems]);
+    setActiveTab("dashboard");
+
+    // Fetch video info for each item in the background to show thumbnails and titles
+    for (const item of newItems) {
+      try {
+        const info = await invoke<VideoInfo>("fetch_video_info", { url: item.url });
+        setBatchQueueItems((prev) =>
+          prev.map((b) =>
+            b.id === item.id
+              ? {
+                  ...b,
+                  title: info.title || b.title,
+                  thumbnail: info.thumbnail || b.thumbnail,
+                  duration_string: info.duration_string,
+                  site: info.uploader || b.site,
+                }
+              : b
+          )
+        );
+      } catch (err) {
+        console.warn("Failed fetching batch item metadata:", item.url, err);
+      }
     }
+  };
+
+  const handleStartBatchQueue = async (items: BatchItem[]) => {
+    for (const item of items) {
+      await handleStartDownload(
+        item.format.format_id,
+        item.format.ext,
+        item.format.is_audio_only,
+        {
+          id: item.id,
+          url: item.url,
+          title: item.title,
+        },
+        item.format.label,
+        "keep_both"
+      );
+    }
+    setBatchQueueItems([]);
+    setActiveTab("downloads");
   };
   const handleStartDownload = async (
     formatId: string,
@@ -1303,7 +1464,8 @@ export default function App() {
     isAudio: boolean,
     specificInfo?: any,
     formatLabel?: string,
-    duplicateAction?: "overwrite" | "keep_both"
+    duplicateAction?: "overwrite" | "keep_both",
+    customFolder?: string
   ) => {
     const info = specificInfo || videoInfo;
     if (!info) return;
@@ -1374,6 +1536,9 @@ export default function App() {
       ? `${settings.proxyProtocol}://${settings.proxyHost}:${settings.proxyPort}`
       : null;
 
+    const targetBaseDir = customFolder || settings.saveFolder;
+    const targetVideoDir = customFolder ? customFolder : (settings.videoFolder || null);
+    const targetAudioDir = customFolder ? customFolder : (settings.audioFolder || null);
 
     try {
       await invoke("start_download", {
@@ -1384,9 +1549,9 @@ export default function App() {
         formatLabel: displayFormat,
         isAudioOnly: isAudio,
         ext: ext,
-        baseDir: settings.saveFolder,
-        videoDir: settings.videoFolder || null,
-        audioDir: settings.audioFolder || null,
+        baseDir: targetBaseDir,
+        videoDir: targetVideoDir,
+        audioDir: targetAudioDir,
         docsDir: settings.documentsFolder || settings.generalFolder || null,
         compDir: settings.compressedFolder || null,
         progDir: settings.programsFolder || null,
@@ -1543,6 +1708,59 @@ export default function App() {
     setSelectedPlaylistItems(new Set());
   };
 
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (!e.origin.includes("youtube.com")) return;
+      try {
+        let data = e.data;
+        if (typeof data === "string") {
+          try {
+            data = JSON.parse(data);
+          } catch {
+            return;
+          }
+        }
+        if (!data || typeof data !== "object") return;
+
+        if (data.event === "infoDelivery" && data.info) {
+          if (typeof data.info.currentTime === "number" && !isNaN(data.info.currentTime)) {
+            setPreviewTime(data.info.currentTime);
+          }
+          if (typeof data.info.duration === "number" && data.info.duration > 0) {
+            setPreviewDuration(data.info.duration);
+          }
+        }
+
+        let ytState: number | undefined = undefined;
+        if (data.event === "infoDelivery" && data.info?.playerState !== undefined) {
+          ytState = data.info.playerState;
+        } else if (data.event === "onStateChange") {
+          ytState = typeof data.info === "number" ? data.info : data.info?.playerState;
+        }
+
+        if (ytState === 1) { // Playing
+          if (audioRef.current && !audioRef.current.paused) {
+            audioRef.current.pause();
+          }
+          setisAudioElementPlaying(false);
+          setActiveAudioPlaying(null);
+          setPreviewingId(null);
+          if (videoInfo) {
+            transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
+          }
+        } else if (ytState === 2) { // Paused
+          if (videoInfo && nowPlayingRef.current.type === "video") {
+            transitionPlayback({ type: "video", id: videoInfo.id, state: "paused" });
+          }
+        } else if (ytState === 0) { // Ended
+          handleVideoEnded();
+        }
+      } catch { }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [videoInfo, transitionPlayback, handleVideoEnded]);
+
   // Status counters
   const activeCount = history.filter(h => h.status === "downloading" || h.status === "muxing" || h.status === "starting").length;
   const queuedCount = history.filter(h => h.status === "queued" || h.status === "fetching_metadata").length;
@@ -1550,36 +1768,41 @@ export default function App() {
   const completedCount = history.filter(h => h.status === "completed").length;
 
 
-  // Filtered & Sorted history with Real-Time Search & Attention Filter
-  const filteredHistory = history.filter(item => {
-    // 1. Keyword search across title, url, format
-    if (activitySearchQuery.trim()) {
-      const q = activitySearchQuery.toLowerCase().trim();
-      const matchTitle = item.title?.toLowerCase().includes(q);
-      const matchUrl = item.url?.toLowerCase().includes(q);
-      const matchFormat = item.format?.toLowerCase().includes(q);
-      if (!matchTitle && !matchUrl && !matchFormat) return false;
-    }
+  // Filtered & Sorted history with Real-Time Search & Attention Filter (1h: useMemo)
+  const filteredHistory = useMemo(() => {
+    return history.filter(item => {
+      // 1. Keyword search across title, url, format
+      if (activitySearchQuery.trim()) {
+        const q = activitySearchQuery.toLowerCase().trim();
+        const matchTitle = item.title?.toLowerCase().includes(q);
+        const matchUrl = item.url?.toLowerCase().includes(q);
+        const matchFormat = item.format?.toLowerCase().includes(q);
+        if (!matchTitle && !matchUrl && !matchFormat) return false;
+      }
 
-    // 2. Queue filter category
-    if (queueFilter === "all") return true;
-    if (queueFilter === "video") return isVideoFormat(item.format);
-    if (queueFilter === "audio") return isAudioFormat(item.format);
-    if (queueFilter === "active") return item.status === "downloading" || item.status === "muxing" || item.status === "starting";
-    if (queueFilter === "queued") return item.status === "queued" || item.status === "fetching_metadata"; if (queueFilter === "completed") return item.status === "completed";
-    if (queueFilter === "attention") return item.status === "error" || item.status === "interrupted" || item.status === "missing";
-    return true;
-  });
+      // 2. Queue filter category
+      if (queueFilter === "all") return true;
+      if (queueFilter === "video") return isVideoFormat(item.format);
+      if (queueFilter === "audio") return isAudioFormat(item.format);
+      if (queueFilter === "active") return item.status === "downloading" || item.status === "muxing" || item.status === "starting";
+      if (queueFilter === "queued") return item.status === "queued" || item.status === "fetching_metadata";
+      if (queueFilter === "completed") return item.status === "completed";
+      if (queueFilter === "attention") return item.status === "error" || item.status === "interrupted" || item.status === "missing";
+      return true;
+    });
+  }, [history, activitySearchQuery, queueFilter]);
 
-  const sortedHistory = [...filteredHistory].sort((a, b) => {
-    if (sortBy === "date_desc") return b.date_added - a.date_added;
-    if (sortBy === "date_asc") return a.date_added - b.date_added;
-    if (sortBy === "size_desc") return (b.file_size || 0) - (a.file_size || 0);
-    if (sortBy === "size_asc") return (a.file_size || 0) - (b.file_size || 0);
-    if (sortBy === "title") return a.title.localeCompare(b.title);
-    if (sortBy === "progress") return b.percent - a.percent;
-    return 0;
-  });
+  const sortedHistory = useMemo(() => {
+    return [...filteredHistory].sort((a, b) => {
+      if (sortBy === "date_desc") return b.date_added - a.date_added;
+      if (sortBy === "date_asc") return a.date_added - b.date_added;
+      if (sortBy === "size_desc") return (b.file_size || 0) - (a.file_size || 0);
+      if (sortBy === "size_asc") return (a.file_size || 0) - (b.file_size || 0);
+      if (sortBy === "title") return a.title.localeCompare(b.title);
+      if (sortBy === "progress") return b.percent - a.percent;
+      return 0;
+    });
+  }, [filteredHistory, sortBy]);
 
   const activeCardTask = activeCardTaskId ? history.find(h => h.id === activeCardTaskId) : null;
 
@@ -1596,6 +1819,87 @@ export default function App() {
     ),
     completed: history.filter(h => h.status === "completed"),
   };
+
+  const firstActiveDownload = useMemo(() => {
+    return history.find(h => h.status === "downloading" || h.status === "starting" || h.status === "muxing") || null;
+  }, [history]);
+
+  const handlePauseDownload = async (taskId: string) => {
+    try {
+      await invoke("pause_download", { taskId });
+    } catch (err) {
+      console.error("Pause failed:", err);
+    }
+    loadHistory();
+  };
+
+  const handleCancelDownload = async (taskId: string) => {
+    try {
+      await invoke("cancel_download", { taskId });
+    } catch (err) {
+      console.error("Cancel failed:", err);
+    }
+    loadHistory();
+  };
+
+  const handlePauseAll = async () => {
+    for (const h of history) {
+      if (h.status === "downloading" || h.status === "starting" || h.status === "fetching_metadata" || h.status === "muxing") {
+        try {
+          await invoke("pause_download", { taskId: h.id });
+        } catch {}
+      }
+    }
+    loadHistory();
+  };
+
+  const handleResumeAll = async () => {
+    for (const h of history) {
+      if (h.status === "interrupted" || h.status === "error") {
+        handleRetryDownload(h);
+      }
+    }
+  };
+
+  const handleCancelAll = async () => {
+    for (const h of history) {
+      if (h.status === "downloading" || h.status === "starting" || h.status === "queued" || h.status === "interrupted") {
+        try {
+          await invoke("cancel_download", { taskId: h.id });
+        } catch {}
+      }
+    }
+    loadHistory();
+  };
+
+  const handlePauseSelected = async () => {
+    for (const id of selectedHistoryItems) {
+      try {
+        await invoke("pause_download", { taskId: id });
+      } catch {}
+    }
+    loadHistory();
+  };
+
+  const handleResumeSelected = async () => {
+    for (const id of selectedHistoryItems) {
+      const rec = history.find(h => h.id === id);
+      if (rec && (rec.status === "interrupted" || rec.status === "error")) {
+        handleRetryDownload(rec);
+      }
+    }
+  };
+
+  const handleCancelSelected = async () => {
+    for (const id of selectedHistoryItems) {
+      try {
+        await invoke("cancel_download", { taskId: id });
+      } catch {}
+    }
+    setSelectedHistoryItems(new Set());
+    loadHistory();
+  };
+
   if (isHud) {
     return <ClipboardHud settings={settings} />;
   }
@@ -1603,18 +1907,30 @@ export default function App() {
   return (
     <AppShell
       mainRef={mainScrollRef}
-      sidebar={(collapsed) => (
+      sidebar={(collapsed, onToggleCollapse) => (
         <Sidebar
           collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
+          onScrollToTop={() => {
+            mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+          }}
           activeCount={activeCount}
           queuedCount={queuedCount}
+          activeDownload={firstActiveDownload}
           nowPlaying={nowPlaying}
           audioRef={audioRef}
           videoElementRef={videoElementRef}
           theme={theme}
           handleThemeChange={handleThemeChange}
+          audioDevices={audioDevices}
+          selectedAudioDevice={selectedAudioDevice}
+          onSelectAudioDevice={handleDeviceChange}
+          selectedEqPreset={selectedEqPreset}
+          onSelectEqPreset={handleEqPresetChange}
+          playSource={playSource}
+          previewingId={previewingId}
         />
       )}
     >
@@ -1622,7 +1938,9 @@ export default function App() {
       <audio
         ref={audioRef}
         preload="auto"
-        onPlay={() => setisAudioElementPlaying(true)}
+        onPlay={() => {
+          setisAudioElementPlaying(true);
+        }}
         onPause={() => {
           setisAudioElementPlaying(false);
           // Distinguish user pause from stop: if audio is still loaded,
@@ -1650,12 +1968,8 @@ export default function App() {
 
       <ErrorBoundary fallbackTitle="An error occurred in this workspace view">
 
-        {/* ===================== TAB 1: DOWNLOADS ===================== */}
-        {activeTab === "downloads" && (
-          <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-150">
-
-            {/* StatTiles — 5 Purposeful Gradient Highlight Tiles (Clickable to Filter) */}
-
+        {/* ===================== TAB 1: DASHBOARD ===================== */}
+        <div className={activeTab === "dashboard" ? "tab-panel-active max-w-5xl xl:max-w-6xl mx-auto space-y-6" : "tab-panel-hidden max-w-5xl xl:max-w-6xl mx-auto space-y-6"}>
 
             {/* URL Input Form */}
             <UrlInput
@@ -1669,46 +1983,8 @@ export default function App() {
               placeholder={t("input_placeholder")}
               labelAnalyze={t("btn_analyze")}
               labelAnalyzing={t("analyzing")}
+              hasActiveResult={!!(videoInfo && showPreviews)}
             />
-            {/* StatCards — 4 state tiles (click to filter) */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard
-                variant="active"
-                count={activeCount}
-                items={cardItems.active}
-                active={queueFilter === "active"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "active" ? "all" : "active")
-                }
-              />
-              <StatCard
-                variant="queued"
-                count={queuedCount}
-                items={cardItems.queued}
-                active={queueFilter === "queued"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "queued" ? "all" : "queued")
-                }
-              />
-              <StatCard
-                variant="attention"
-                count={attentionCount}
-                items={cardItems.attention}
-                active={queueFilter === "attention"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "attention" ? "all" : "attention")
-                }
-              />
-              <StatCard
-                variant="completed"
-                count={completedCount}
-                items={cardItems.completed}
-                active={queueFilter === "completed"}
-                onClick={() =>
-                  setQueueFilter(queueFilter === "completed" ? "all" : "completed")
-                }
-              />
-            </div>
 
             {fetchError && (
               <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
@@ -1742,6 +2018,7 @@ export default function App() {
                 activeCardTask={activeCardTask}
                 onDismissProgress={() => setActiveCardTaskId(null)}
                 t={t}
+                isAnalyzing={isFetching}
                 vm={{
                   activeVideoPlaying,
                   isVideoLoading,
@@ -1783,9 +2060,57 @@ export default function App() {
                   setisAudioElementPlaying,
                   setPreviewingId,
                   transitionPlayback,
-                  setActiveVideoPlaying,
                   nowPlaying,
+                  stopAudioPlayback,
+                  repeatMode: audioRepeat,
+                  cycleRepeatMode: cycleAudioRepeat,
+                  audioShuffle,
+                  toggleAudioShuffle,
+                  audioNext,
+                  audioPrev,
+                  playlistInfo,
+                  selectedPlaylistItems,
                 }}
+              />
+            )}
+
+            {/* Batch Links Queue Panel */}
+            {batchQueueItems.length > 0 && (
+              <BatchQueuePanel
+                items={batchQueueItems}
+                onStartBatchDownload={handleStartBatchQueue}
+                onClearBatch={() => setBatchQueueItems([])}
+                onRemoveItem={(id) => setBatchQueueItems((prev) => prev.filter((b) => b.id !== id))}
+                onUpdateItemFormat={(id, fmt) =>
+                  setBatchQueueItems((prev) =>
+                    prev.map((b) => (b.id === id ? { ...b, format: fmt } : b))
+                  )
+                }
+                onPlayVideo={(item) =>
+                  handlePlayVideo({
+                    id: item.id,
+                    url: item.url,
+                    title: item.title,
+                    thumbnail: item.thumbnail,
+                    duration_string: item.duration_string || "",
+                  })
+                }
+                onPreviewAudio={toggleAudioPreview}
+                previewingId={previewingId}
+                isAudioElementPlaying={isAudioElementPlaying}
+                isLoadingAudioId={isLoadingAudioId}
+                previewTime={previewTime}
+                previewDuration={previewDuration}
+                onSeek={handleSeek}
+                onSeekRelative={handleSeekRelative}
+                onClosePreview={() => {
+                  if (audioRef.current) audioRef.current.pause();
+                  setisAudioElementPlaying(false);
+                  setPreviewingId(null);
+                  transitionPlayback({ type: "none" });
+                }}
+                audioRef={audioRef}
+                formatSeconds={formatSeconds}
               />
             )}
 
@@ -1840,59 +2165,63 @@ export default function App() {
                 onClear={() => setActivePlaylistBatch(null)}
               />
             )}
+        </div>
 
-            {/* Downloads Activity List with Categorization Tabs, Real-Time Search & Sorting */}
-            <ActivityList
-              t={t}
-              sortedHistory={sortedHistory}
-              activitySearchQuery={activitySearchQuery}
-              setActivitySearchQuery={setActivitySearchQuery}
-              queueFilter={queueFilter}
-              setQueueFilter={setQueueFilter}
-              sortBy={sortBy}
-              setSortBy={setSortBy}
-              selectedHistoryItems={selectedHistoryItems}
-              setSelectedHistoryItems={setSelectedHistoryItems}
-              onOpenFolder={openFolder}
-              onOpenFile={openFile}
-              onRemove={handleRemoveHistory}
-              onDeleteFile={handleDeleteFile}
-              onRetry={handleRetryDownload}
-            />
+        {/* ===================== TAB 2: DOWNLOADS ===================== */}
+        <div className={activeTab === "downloads" ? "tab-panel-active" : "tab-panel-hidden"}>
+          <DownloadsTab
+            t={t}
+            sortedHistory={sortedHistory}
+            activitySearchQuery={activitySearchQuery}
+            setActivitySearchQuery={setActivitySearchQuery}
+            queueFilter={queueFilter}
+            setQueueFilter={setQueueFilter}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            selectedHistoryItems={selectedHistoryItems}
+            setSelectedHistoryItems={setSelectedHistoryItems}
+            activeCount={activeCount}
+            queuedCount={queuedCount}
+            attentionCount={attentionCount}
+            completedCount={completedCount}
+            cardItems={cardItems}
+            openFolder={openFolder}
+            openFile={openFile}
+            handleRemoveHistory={handleRemoveHistory}
+            handleDeleteFile={handleDeleteFile}
+            handleRetryDownload={handleRetryDownload}
+            onPauseAll={handlePauseAll}
+            onResumeAll={handleResumeAll}
+            onCancelAll={handleCancelAll}
+            onCancelSelected={handleCancelSelected}
+            onPauseDownload={handlePauseDownload}
+            onResumeDownload={handleRetryDownload}
+            onCancelDownload={handleCancelDownload}
+            onPauseSelected={handlePauseSelected}
+            onResumeSelected={handleResumeSelected}
+          />
+        </div>
 
-          </div>
-        )}
-
-        {/* ===================== TAB 2: AUDIO HUB ===================== */}
-        {activeTab === "audio" && (
-          <AudioHubTab
+        {/* ===================== TAB 3: MULTIMEDIA HUB ===================== */}
+        <div className={activeTab === "multimedia" ? "tab-panel-active" : "tab-panel-hidden"}>
+          <MultimediaTab
             t={t}
             history={history}
+            isVideoFormat={isVideoFormat}
             isAudioFormat={isAudioFormat}
-            handleStartDownload={handleStartDownload}
             openFolder={openFolder}
             openFile={openFile}
             handleDeleteFile={handleDeleteFile}
-            audioRef={audioRef}
-            activeAudioPlaying={activeAudioPlaying}
-            isAudioElementPlaying={isAudioElementPlaying}
-            onPlayItem={playAudioFromLibrary}
-            onPlayPause={toggleAudioPlayPause}
-            onNext={audioNext}
-            onPrev={audioPrev}
-            onSeek={handleSeek}
-            previewTime={previewTime}
-            previewDuration={previewDuration}
-            audioShuffle={audioShuffle}
-            audioRepeat={audioRepeat}
-            onToggleShuffle={toggleAudioShuffle}
-            onCycleRepeat={cycleAudioRepeat}
             formatSeconds={formatSeconds}
+            stopGlobalAudioPlayback={stopAudioPlayback}
+            onNowPlayingChange={transitionPlayback}
+            selectedAudioDevice={selectedAudioDevice}
+            nowPlaying={nowPlaying}
           />
-        )}
+        </div>
 
-        {/* ===================== TAB 3: COMPLETE SETTINGS ===================== */}
-        {activeTab === "settings" && (
+        {/* ===================== TAB 4: COMPLETE SETTINGS ===================== */}
+        <div className={activeTab === "settings" ? "tab-panel-active" : "tab-panel-hidden"}>
           <SettingsTab
             t={t}
             settings={settings}
@@ -1910,7 +2239,7 @@ export default function App() {
             handleBrowseFolder={handleBrowseFolder}
             openFolder={openFolder}
           />
-        )}
+        </div>
 
       </ErrorBoundary>
 
