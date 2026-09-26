@@ -202,7 +202,32 @@ export default function App() {
   const [previewTime, setPreviewTime] = useState(0);
   const [previewDuration, setPreviewDuration] = useState(0);
 
+  // ─── F-29: Bounded audio blob cache with URL revocation ───
+  // Every preview creates a Blob + object URL from raw bytes. Without a cap
+  // and revoke, these accumulate in browser memory for the entire session.
+  // Cap = 8 entries (older evicted first). Revoke on eviction AND on overwrite.
+  const AUDIO_CACHE_CAP = 8;
   const audioStreamCache = useRef<Map<string, string>>(new Map());
+  const cacheAudioBlobUrl = (songId: string, blobUrl: string) => {
+    const cache = audioStreamCache.current;
+    // If a stale entry exists for this key, revoke it before overwriting
+    const existing = cache.get(songId);
+    if (existing && existing !== blobUrl) {
+      try { URL.revokeObjectURL(existing); } catch { }
+      cache.delete(songId);
+    }
+    // FIFO eviction: Map preserves insertion order
+    while (cache.size >= AUDIO_CACHE_CAP) {
+      const firstKey = cache.keys().next().value as string | undefined;
+      if (!firstKey) break;
+      const firstUrl = cache.get(firstKey);
+      if (firstUrl) {
+        try { URL.revokeObjectURL(firstUrl); } catch { }
+      }
+      cache.delete(firstKey);
+    }
+    cache.set(songId, blobUrl);
+  };
 
   // --- NEW: Audio Output Devices State ---
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
@@ -1157,8 +1182,9 @@ export default function App() {
           `Audio fetch returned ${bytes?.length ?? 0} bytes — likely an HTTP error, not real audio.`
         );
       }
-      const blob = new Blob([new Uint8Array(bytes)], { type: "audio/webm" }); const blobUrl = URL.createObjectURL(blob);
-      audioStreamCache.current.set(songId, blobUrl);
+      const blob = new Blob([new Uint8Array(bytes)], { type: "audio/webm" });
+      const blobUrl = URL.createObjectURL(blob);
+      cacheAudioBlobUrl(songId, blobUrl);
       if (audioRef.current) {
         audioRef.current.src = blobUrl;
         audioRef.current.load();

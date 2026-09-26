@@ -705,11 +705,42 @@ async fn start_download(
         let _ = db::insert_download(&conn, &record);
     }
 
+    // ─── F-09: Emit Queued, then await a concurrency slot ───
+    // Emit "Queued" first so the frontend stops showing the optimistic
+    // "Starting" state while we wait for a permit.
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressPayload {
+            task_id: task_id.clone(),
+            percent: 0.0,
+            speed: "Queued".to_string(),
+            eta: "--".to_string(),
+            status: DownloadStatus::Queued,
+            error_code: None,
+            error: None,
+            file_path: None,
+        },
+    );
+
+    // Acquire a slot from the global concurrency limiter. If all slots are
+    // taken (3 concurrent downloads already running), this awaits until one
+    // frees up. The permit is moved into the worker thread and released
+    // automatically when the thread exits — no manual cleanup needed.
+    let semaphore = app.state::<AppState>().download_semaphore.clone();
+    let _permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| "Download queue was closed".to_string())?;
+
     let download_dir_clone = download_dir.clone();
     let url_clone = url.clone();
     let cookies_clone = cookies_from_browser.clone();
 
     std::thread::spawn(move || {
+        // Hold the concurrency permit for the entire lifetime of this
+        // download. Drop fires automatically when the closure exits,
+        // whether by completion, error, or cancellation.
+        let _permit = _permit;
         let mut cmd = Command::new(&yt_dlp_path);
         let progress_template = "DEVIZEE_PROGRESS:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s";
 
@@ -1037,11 +1068,11 @@ async fn start_download(
                         let speed = parts[1].trim().to_string();
                         let eta = parts[2].trim().to_string();
 
-                        let status = if percent >= 100.0 {
-                            DownloadStatus::Muxing
-                        } else {
-                            DownloadStatus::Downloading
-                        };
+                        // F-XX: Do not flip to Muxing just because a stream
+                        // hit 100%. HD downloads have separate video + audio
+                        // streams that each hit 100%. Real muxing starts when
+                        // we see "Merging formats into" on stdout (handled below).
+                        let status = DownloadStatus::Downloading;
 
                         // Always emit to the frontend for a live progress bar.
                         let _ = app_clone.emit(
@@ -1099,6 +1130,34 @@ async fn start_download(
                         if !fp.is_empty() {
                             final_file_path = Some(fp);
                         }
+                    }
+
+                    // F-XX: Real muxing phase begins now — the last thing
+                    // before the file is finalized. Emit the status change.
+                    let _ = app_clone.emit(
+                        "download-progress",
+                        DownloadProgressPayload {
+                            task_id: task_id_clone.clone(),
+                            percent: 100.0,
+                            speed: "Finalizing".to_string(),
+                            eta: "--".to_string(),
+                            status: DownloadStatus::Muxing,
+                            error_code: None,
+                            error: None,
+                            file_path: None,
+                        },
+                    );
+                    if let Some(state) = app_clone.try_state::<AppState>() {
+                        let conn = state.db_conn.lock().unwrap();
+                        let _ = db::update_download_status(
+                            &conn,
+                            &task_id_clone,
+                            &DownloadStatus::Muxing,
+                            100.0,
+                            None,
+                            None,
+                            None,
+                        );
                     }
                 } else if line.contains("has already been downloaded") {
                     let cleaned = line
@@ -1683,6 +1742,11 @@ async fn search_youtube(
 struct AppState {
     db_conn: std::sync::Mutex<rusqlite::Connection>,
     active_processes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
+    // ─── F-09: Concurrency gate ───
+    // Caps the number of yt-dlp child processes running at once. Prevents
+    // CPU/disk thrashing when the user queues dozens of downloads rapidly.
+    // Hardcoded to 3 for Wave 1. Dynamic configuration comes in Wave 2.
+    download_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 #[tauri::command]
@@ -2022,6 +2086,9 @@ pub fn run() {
                 active_processes: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
+                // F-09: 3 concurrent yt-dlp processes maximum.
+                // Wave 2 will read this from user settings.
+                download_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
             });
 
             // System tray icon + menu
