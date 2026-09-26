@@ -22,6 +22,29 @@ pub struct DownloadRecord {
     pub error_message: Option<String>,
 }
 
+/// Open a SQLite DB and verify it isn't corrupted. Returns Err on any
+/// failure so the caller can decide whether to quarantine + reinit.
+fn open_and_validate(path: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+
+    // quick_check is ~10x faster than integrity_check and catches the vast
+    // majority of corruption cases (page-level structural damage, broken
+    // B-tree pointers, etc.). Perfect for a startup sanity gate.
+    let check_result: Result<String> =
+        conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0));
+
+    match check_result {
+        Ok(status) if status == "ok" => Ok(conn),
+        Ok(status) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("DB integrity check failed: {}", status),
+            ),
+        ))),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn init_db(app: &AppHandle) -> Result<Connection> {
     let app_dir = app
         .path()
@@ -33,7 +56,49 @@ pub fn init_db(app: &AppHandle) -> Result<Connection> {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     }
     let db_path = app_dir.join("downloads.db");
-    let conn = Connection::open(db_path)?;
+
+    // ─── W3-4: Corruption recovery ───
+    // If the DB file exists but is unreadable (power cut during WAL write,
+    // disk-full crash, etc.), we quarantine it and start fresh rather than
+    // panicking. Users lose history but the app keeps working.
+    let conn = match open_and_validate(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[Devizee DB] Failed to open {:?}: {}. Attempting quarantine + reinit.",
+                db_path, e
+            );
+            // Quarantine: rename the corrupt file so we can start clean.
+            // Keep the WAL and SHM sidecar files too — without them, SQLite
+            // may refuse to open the renamed DB later for diagnostics.
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let quarantine = db_path.with_extension(format!("db.corrupt.{}", ts));
+            let _ = std::fs::rename(&db_path, &quarantine);
+            let _ = std::fs::rename(
+                db_path.with_extension("db-wal"),
+                quarantine.with_extension("db.corrupt-wal"),
+            );
+            let _ = std::fs::rename(
+                db_path.with_extension("db-shm"),
+                quarantine.with_extension("db.corrupt-shm"),
+            );
+
+            // Retry with a fresh file. If this also fails, the directory is
+            // unwritable — surface a real error to the caller instead of panicking.
+            Connection::open(&db_path).map_err(|e2| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "Database unrecoverable. Quarantined to {:?} but could not create fresh DB: {}",
+                        quarantine, e2
+                    ),
+                )))
+            })?
+        }
+    };
 
     // ─── F-23: Concurrency & crash-safety pragmas ────────────────────────────
     // journal_mode = WAL → readers don't block writers; the DB doesn't lock

@@ -808,9 +808,13 @@ async fn start_download(
         error_message: None,
     };
 
-    if let Some(_state) = app.try_state::<AppState>() {
-        let conn = db::init_db(&app).expect("Failed to initialize database");
-        let _ = db::insert_download(&conn, &record);
+    // W3-4: use the shared connection from AppState instead of opening a new
+    // one per download. Falls back to a fresh init only if AppState is
+    // missing (should never happen in practice).
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(conn) = state.db_conn.lock() {
+            let _ = db::insert_download(&conn, &record);
+        }
     }
 
     // ─── F-09: Emit Queued, then await a concurrency slot ───
@@ -2188,7 +2192,21 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
+            // W3-4: init_db is now self-healing (quarantines corrupt DB and
+            // starts fresh). If it still fails, log clearly and shut down
+            // gracefully instead of panicking with an unreadable stack trace.
+            let conn = match db::init_db(app.handle()) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "[Devizee] FATAL: Could not initialize database after recovery attempts: {}",
+                        e
+                    );
+                    // Return the error so Tauri aborts the setup cleanly. The
+                    // app will exit rather than run in a broken state.
+                    return Err(Box::new(e) as Box<dyn std::error::Error>);
+                }
+            };
             app.manage(AppState {
                 db_conn: std::sync::Mutex::new(conn),
                 active_processes: std::sync::Arc::new(std::sync::Mutex::new(
