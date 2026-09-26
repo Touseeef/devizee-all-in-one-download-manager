@@ -35,6 +35,19 @@ pub fn init_db(app: &AppHandle) -> Result<Connection> {
     let db_path = app_dir.join("downloads.db");
     let conn = Connection::open(db_path)?;
 
+    // ─── F-23: Concurrency & crash-safety pragmas ────────────────────────────
+    // journal_mode = WAL → readers don't block writers; the DB doesn't lock
+    //   during long progress-update bursts. Persists across connections.
+    // synchronous = NORMAL → safe with WAL; crashes never corrupt; faster than
+    //   FULL by skipping per-commit fsync on some operations.
+    // busy_timeout = 5000ms → if another writer holds a lock (rare with WAL),
+    //   wait up to 5s instead of erroring immediately.
+    // foreign_keys = ON → future-proof for when we add FK constraints.
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+
     // Complete base table schema
     conn.execute(
         "CREATE TABLE IF NOT EXISTS downloads (
