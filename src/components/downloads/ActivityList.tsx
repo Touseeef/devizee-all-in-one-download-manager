@@ -23,6 +23,7 @@ type SortBy =
 
 export const ActivityList = React.memo(function ActivityList({
     t,
+    isOnline,
     sortedHistory,
     activitySearchQuery,
     setActivitySearchQuery,
@@ -42,6 +43,7 @@ export const ActivityList = React.memo(function ActivityList({
     onCancel,
 }: {
     t: (key: TranslationKey) => string;
+    isOnline: boolean;
     sortedHistory: DownloadRecord[];
     activitySearchQuery: string;
     setActivitySearchQuery: (v: string) => void;
@@ -185,6 +187,7 @@ export const ActivityList = React.memo(function ActivityList({
                                 <div className="flex-1 min-w-0">
                                     <HistoryItem
                                         record={record}
+                                        isOnline={isOnline}
                                         onOpenFolder={() => onOpenFolder(record.file_path)}
                                         onOpenFile={() => onOpenFile(record.file_path)}
                                         onRemove={() => onRemove(record.id)}

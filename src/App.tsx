@@ -295,6 +295,9 @@ export default function App() {
   };
 
 
+  // W3-9: Network status — tracks navigator.onLine for download UX
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+
   // Global Volume State (Persisted)
   const [volume, setVolume] = useState<number>(() => {
     const saved = localStorage.getItem("devizee_volume");
@@ -341,11 +344,6 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<PlaylistEntry[] | null>(null);
   const [isSearchingYoutube, setIsSearchingYoutube] = useState(false);
 
-  // Playlist Bulk-Download State & Batch Progress View
-  const [batchPreset, setBatchPreset] = useState("1080p");
-  const [batchFormatId, setBatchFormatId] = useState("bestvideo[height<=1080]+bestaudio/best[height<=1080]");
-  const [batchExt, setBatchExt] = useState("mp4");
-  const [batchIsAudio, setBatchIsAudio] = useState(false);
   const [activePlaylistBatch, setActivePlaylistBatch] = useState<{
     title: string;
     taskIds: string[];
@@ -457,6 +455,39 @@ export default function App() {
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
+
+  // W3-9: online/offline detection + notifications
+  useEffect(() => {
+    let wentOffline = false;
+
+    const goOnline = () => {
+      setIsOnline(true);
+      if (wentOffline && settings.showNotifications) {
+        sendNotification({
+          title: "Devizee - Connection Restored",
+          body: "Downloads are resuming automatically.",
+        });
+      }
+      wentOffline = false;
+    };
+    const goOffline = () => {
+      setIsOnline(false);
+      wentOffline = true;
+      if (settings.showNotifications) {
+        sendNotification({
+          title: "Devizee - No Internet Connection",
+          body: "Active downloads are paused. They will resume automatically when the connection returns.",
+        });
+      }
+    };
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.showNotifications]);
 
   // Single Consolidated Volume Controller
   const volumeDebounceTimer = useRef<any>(null);
@@ -595,6 +626,34 @@ export default function App() {
     document.documentElement.style.fontSize = `${(zoomLevel / 100) * 16}px`;
   }, [zoomLevel]);
 
+
+  useEffect(() => {
+    const goOnline = () => {
+      setIsOnline(true);
+      if (settings.showNotifications) {
+        sendNotification({
+          title: "Devizee - Connection Restored",
+          body: "Downloads are resuming automatically.",
+        });
+      }
+    };
+    const goOffline = () => {
+      setIsOnline(false);
+      if (settings.showNotifications) {
+        sendNotification({
+          title: "Devizee - No Internet Connection",
+          body: "Active downloads are paused. They will resume automatically when the connection returns.",
+        });
+      }
+    };
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, [settings.showNotifications]);
+
   // Keyboard Shortcuts Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -631,8 +690,13 @@ export default function App() {
       }
 
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) {
-        return; // Do not intercept while typing
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||                                   // W3-6b
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return; // Do not intercept while typing or interacting with form controls
       }
 
       if (e.code === "Space") {
@@ -1372,6 +1436,9 @@ export default function App() {
   }
 
   const formatSeconds = (secs: number) => {
+    // W3-6: Guard against NaN/Infinity from live streams or broken durations.
+    // Prevents "NaN:NaN" from rendering in the UI.
+    if (!Number.isFinite(secs) || secs < 0) return "0:00";
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m}:${s < 10 ? "0" : ""}${s}`;
@@ -2377,11 +2444,6 @@ export default function App() {
               toggleItem={togglePlaylistItem}
               selectAll={selectAllPlaylist}
               deselectAll={deselectAllPlaylist}
-              batchPreset={batchPreset}
-              setBatchPreset={setBatchPreset}
-              setBatchFormatId={setBatchFormatId}
-              setBatchExt={setBatchExt}
-              setBatchIsAudio={setBatchIsAudio}
               onBatchDownload={(items) => handleBatchDownload(items)}
               onSingleDownload={(entry, preset) => {
                 const f = presetToFormat(preset);
@@ -2423,6 +2485,7 @@ export default function App() {
         <div className={activeTab === "downloads" ? "tab-panel-active" : "tab-panel-hidden"}>
           <DownloadsTab
             t={t}
+            isOnline={isOnline}
             sortedHistory={sortedHistory}
             activitySearchQuery={activitySearchQuery}
             setActivitySearchQuery={setActivitySearchQuery}

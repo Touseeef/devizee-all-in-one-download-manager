@@ -29,6 +29,7 @@ type SortBy =
 
 export function DownloadsTab({
     t,
+    isOnline,
     sortedHistory,
     activitySearchQuery,
     setActivitySearchQuery,
@@ -59,6 +60,7 @@ export function DownloadsTab({
     onResumeSelected,
 }: {
     t: (key: TranslationKey) => string;
+    isOnline: boolean;
     sortedHistory: DownloadRecord[];
     activitySearchQuery: string;
     setActivitySearchQuery: (v: string) => void;
@@ -241,6 +243,7 @@ export function DownloadsTab({
             {/* Comprehensive Activity List */}
             <ActivityList
                 t={t}
+                isOnline={isOnline}
                 sortedHistory={sortedHistory}
                 activitySearchQuery={activitySearchQuery}
                 setActivitySearchQuery={setActivitySearchQuery}

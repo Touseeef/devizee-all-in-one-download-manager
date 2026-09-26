@@ -33,6 +33,7 @@ function extractYtId(url: string, id: string): string | null {
 
 export const HistoryItem = React.memo(function HistoryItem({
     record,
+    isOnline,
     onOpenFolder,
     onOpenFile,
     onRemove,
@@ -47,6 +48,7 @@ export const HistoryItem = React.memo(function HistoryItem({
     tDeleteFile,
 }: {
     record: DownloadRecord;
+    isOnline: boolean;
     onOpenFolder: () => void;
     onOpenFile: () => void;
     onRemove: () => void;
@@ -164,14 +166,19 @@ export const HistoryItem = React.memo(function HistoryItem({
                                             {formatFileSize(record.file_size)}
                                         </span>
                                     )}
-                                    {record.speed && (record.status === "downloading" || record.status === "muxing") && (
+                                    {isOnline && record.speed && (record.status === "downloading" || record.status === "muxing") && (
                                         <span className="text-caption text-accent font-mono text-[10px]">
                                             {record.speed}
                                         </span>
                                     )}
-                                    {record.eta && record.eta !== "--" && record.eta.trim() !== "" && record.status === "downloading" && (
+                                    {isOnline && record.eta && record.eta !== "--" && record.eta.trim() !== "" && record.status === "downloading" && (
                                         <span className="text-caption text-tertiary font-mono text-[10px]">
                                             ETA {record.eta}
+                                        </span>
+                                    )}
+                                    {!isOnline && (record.status === "downloading" || record.status === "muxing") && (
+                                        <span className="text-caption text-status-warning font-mono text-[10px]">
+                                            Paused · will resume when online
                                         </span>
                                     )}
                                 </>
@@ -189,8 +196,15 @@ export const HistoryItem = React.memo(function HistoryItem({
                         )}
 
                         {/* Status Badge */}
-                        <span
-                            className={`text-caption font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 text-[11px] ${display.colorToken === "accent"
+                        {/* W3-9: Show "Waiting for network" when offline and download is active */}
+                        {!isOnline && (record.status === "downloading" || record.status === "muxing") ? (
+                            <span className="text-caption font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 text-[11px] bg-status-warning-subtle text-status-warning">
+                                <Loader2 size={10} className="animate-spin" />
+                                Waiting for network
+                            </span>
+                        ) : (
+                            <span
+                                className={`text-caption font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 text-[11px] ${display.colorToken === "accent"
                                     ? "bg-accent-subtle text-accent"
                                     : display.colorToken === "status-success"
                                         ? "bg-status-success-subtle text-status-success"
@@ -199,14 +213,15 @@ export const HistoryItem = React.memo(function HistoryItem({
                                             : display.colorToken === "status-warning"
                                                 ? "bg-status-warning-subtle text-status-warning"
                                                 : "bg-surface-2 text-secondary"
-                                }`}
-                        >
-                            {display.colorToken === "accent" && (
-                                <Loader2 size={10} className="animate-spin" />
-                            )}
-                            {display.label}{" "}
-                            {record.status === "downloading" && `${record.percent.toFixed(0)}%`}
-                        </span>
+                                    }`}
+                            >
+                                {display.colorToken === "accent" && (
+                                    <Loader2 size={10} className="animate-spin" />
+                                )}
+                                {display.label}{" "}
+                                {record.status === "downloading" && `${record.percent.toFixed(0)}%`}
+                            </span>
+                        )}
 
                         {record.status === "error" && onRetry && (
                             <button
@@ -383,17 +398,16 @@ export const HistoryItem = React.memo(function HistoryItem({
                 {/* In-Flight Download Progress Bar */}
                 {(record.status === "downloading" || record.status === "muxing") && (
                     <div className="w-full bg-surface-2 rounded-full h-1 overflow-hidden mt-1.5 relative">
-                        {record.status === "downloading" ? (
+                        {!isOnline ? (
+                            /* W3-9: offline → amber pulse bar. Communicates "paused,
+                               waiting for network" without lying about progress. */
+                            <div className="indeterminate-bar h-full w-1/3 bg-status-warning rounded-full" />
+                        ) : record.status === "downloading" ? (
                             <div
                                 className="bg-accent h-full transition-all duration-300"
                                 style={{ width: `${Math.min(100, Math.max(0, record.percent))}%` }}
                             />
                         ) : (
-                            /* Indeterminate animated bar during muxing/verifying.
-                               yt-dlp doesn't emit progress during the ffmpeg merge,
-                               so we show a looping sweep that communicates "working
-                               but no % available" — the standard pattern used by
-                               IDM, FDM, and aria2. */
                             <div className="indeterminate-bar h-full w-1/3 bg-accent rounded-full" />
                         )}
                     </div>

@@ -72,6 +72,9 @@ export function PlaylistPanel({
     audioRef: React.RefObject<HTMLAudioElement | null>;
 }) {
     const formatSeconds = (secs: number) => {
+        // W3-6: Guard against NaN/Infinity from live streams or broken durations.
+        // Prevents "NaN:NaN" from rendering in the UI.
+        if (!Number.isFinite(secs) || secs < 0) return "0:00";
         const m = Math.floor(secs / 60);
         const s = Math.floor(secs % 60);
         return `${m}:${s < 10 ? "0" : ""}${s}`;
@@ -301,10 +304,10 @@ export function PlaylistPanel({
                                                 {entryTask && (
                                                     <span
                                                         className={`text-[10px] font-semibold px-1.5 py-0.5 rounded font-mono inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${entryTask.status === "completed"
-                                                                ? "bg-status-success-subtle/30 text-status-success"
-                                                                : entryTask.status === "error"
-                                                                    ? "bg-status-danger-subtle/30 text-status-danger"
-                                                                    : "bg-accent-subtle text-accent"
+                                                            ? "bg-status-success-subtle/30 text-status-success"
+                                                            : entryTask.status === "error"
+                                                                ? "bg-status-danger-subtle/30 text-status-danger"
+                                                                : "bg-accent-subtle text-accent"
                                                             }`}
                                                     >
                                                         {entryTask.status === "downloading" && (

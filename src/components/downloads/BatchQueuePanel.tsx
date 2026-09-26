@@ -122,6 +122,7 @@ export function BatchQueuePanel({
     onClosePreview,
     audioRef,
     formatSeconds = (s: number) => {
+        if (!Number.isFinite(s) || s < 0) return "0:00";
         const m = Math.floor(s / 60);
         const sec = Math.floor(s % 60);
         return `${m}:${sec < 10 ? "0" : ""}${sec}`;
@@ -223,8 +224,8 @@ export function BatchQueuePanel({
                             type="button"
                             onClick={() => handleApplyGlobalPreset(preset.id)}
                             className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-all border cursor-pointer ${isSelected
-                                    ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
-                                    : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
+                                ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
+                                : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
                                 }`}
                             title={`Set all items to ${preset.label}`}
                         >
@@ -239,8 +240,8 @@ export function BatchQueuePanel({
                     value={isDropdownSelected ? selectedGlobalPreset : ""}
                     onChange={(e) => handleApplyGlobalPreset(e.target.value)}
                     className={`px-3 py-1.5 rounded-lg text-caption font-semibold border outline-none cursor-pointer transition-all ${isDropdownSelected
-                            ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
-                            : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
+                        ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
+                        : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
                         }`}
                     title="Select more video and audio formats"
                 >
@@ -284,8 +285,8 @@ export function BatchQueuePanel({
                                     <div
                                         onClick={() => onPlayVideo?.(item)}
                                         className={`w-24 sm:w-28 aspect-video rounded-lg overflow-hidden shrink-0 relative border shadow-xs cursor-pointer group/thumb ${item.metadataError
-                                                ? "bg-status-danger-subtle/30 border-status-danger/40"
-                                                : "bg-black border-border-subtle"
+                                            ? "bg-status-danger-subtle/30 border-status-danger/40"
+                                            : "bg-black border-border-subtle"
                                             }`}
                                         title={
                                             item.metadataError
@@ -354,8 +355,8 @@ export function BatchQueuePanel({
                                             type="button"
                                             onClick={() => onPreviewAudio(item.url, item.id)}
                                             className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer border shadow-2xs ${isThisPreviewing && isAudioElementPlaying
-                                                    ? "bg-accent text-white border-accent"
-                                                    : "bg-surface-1 hover:bg-surface-2 text-accent border-border-subtle"
+                                                ? "bg-accent text-white border-accent"
+                                                : "bg-surface-1 hover:bg-surface-2 text-accent border-border-subtle"
                                                 }`}
                                             title="Listen audio preview"
                                         >

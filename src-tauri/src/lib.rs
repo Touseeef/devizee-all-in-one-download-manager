@@ -961,6 +961,16 @@ async fn start_download(
             // (fixes the 5+ second cold-start delay for local playback).
             "--postprocessor-args",
             "Merger:-movflags +faststart",
+            // W3-8: Network resilience for DASH/HLS multi-fragment downloads.
+            // A single dropped fragment on a shaky Wi-Fi connection used to
+            // abort the entire download. These flags retry each fragment up
+            // to 10 times with exponential backoff before giving up.
+            "--fragment-retries",
+            "10",
+            "--retry-sleep",
+            "fragment:exp=1:20",
+            "--socket-timeout",
+            "30",
         ]);
 
         // Priority 9: Stage temp/.part files into separate temp folder if configured
@@ -1211,6 +1221,12 @@ async fn start_download(
         let error_logs = Arc::new(Mutex::new(Vec::new()));
         let error_logs_clone = error_logs.clone();
         std::thread::spawn(move || {
+            // W3-7: Cap stderr accumulation. A chatty yt-dlp error loop can
+            // emit thousands of warning lines on long downloads, previously
+            // growing this Vec unboundedly. We keep only the last 1000 lines —
+            // which is more than enough context for error categorization and
+            // log display. Older lines are dropped.
+            const MAX_STDERR_LINES: usize = 1000;
             let mut reader = BufReader::new(stderr);
             let mut buf = Vec::new();
             while let Ok(n) = reader.read_until(b'\n', &mut buf) {
@@ -1222,6 +1238,13 @@ async fn start_download(
                 if !line.is_empty() {
                     let mut logs = error_logs_clone.lock().unwrap();
                     logs.push(line);
+                    if logs.len() > MAX_STDERR_LINES {
+                        // Drop the oldest 200 lines when we hit the cap. This
+                        // is cheaper than removing one at a time and keeps
+                        // recent context intact.
+                        let excess = logs.len() - MAX_STDERR_LINES;
+                        logs.drain(0..excess);
+                    }
                 }
             }
         });
