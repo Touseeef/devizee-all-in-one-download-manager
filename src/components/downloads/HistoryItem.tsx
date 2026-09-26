@@ -169,6 +169,11 @@ export const HistoryItem = React.memo(function HistoryItem({
                                             {record.speed}
                                         </span>
                                     )}
+                                    {record.eta && record.eta !== "--" && record.eta.trim() !== "" && record.status === "downloading" && (
+                                        <span className="text-caption text-tertiary font-mono text-[10px]">
+                                            ETA {record.eta}
+                                        </span>
+                                    )}
                                 </>
                             )}
                         </div>
@@ -185,8 +190,7 @@ export const HistoryItem = React.memo(function HistoryItem({
 
                         {/* Status Badge */}
                         <span
-                            className={`text-caption font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 text-[11px] ${
-                                display.colorToken === "accent"
+                            className={`text-caption font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 text-[11px] ${display.colorToken === "accent"
                                     ? "bg-accent-subtle text-accent"
                                     : display.colorToken === "status-success"
                                         ? "bg-status-success-subtle text-status-success"
@@ -195,7 +199,7 @@ export const HistoryItem = React.memo(function HistoryItem({
                                             : display.colorToken === "status-warning"
                                                 ? "bg-status-warning-subtle text-status-warning"
                                                 : "bg-surface-2 text-secondary"
-                            }`}
+                                }`}
                         >
                             {display.colorToken === "accent" && (
                                 <Loader2 size={10} className="animate-spin" />
@@ -378,11 +382,20 @@ export const HistoryItem = React.memo(function HistoryItem({
 
                 {/* In-Flight Download Progress Bar */}
                 {(record.status === "downloading" || record.status === "muxing") && (
-                    <div className="w-full bg-surface-2 rounded-full h-1 overflow-hidden mt-1.5">
-                        <div
-                            className="bg-accent h-full transition-all duration-300"
-                            style={{ width: `${Math.min(100, Math.max(0, record.percent))}%` }}
-                        />
+                    <div className="w-full bg-surface-2 rounded-full h-1 overflow-hidden mt-1.5 relative">
+                        {record.status === "downloading" ? (
+                            <div
+                                className="bg-accent h-full transition-all duration-300"
+                                style={{ width: `${Math.min(100, Math.max(0, record.percent))}%` }}
+                            />
+                        ) : (
+                            /* Indeterminate animated bar during muxing/verifying.
+                               yt-dlp doesn't emit progress during the ffmpeg merge,
+                               so we show a looping sweep that communicates "working
+                               but no % available" — the standard pattern used by
+                               IDM, FDM, and aria2. */
+                            <div className="indeterminate-bar h-full w-1/3 bg-accent rounded-full" />
+                        )}
                     </div>
                 )}
             </div>

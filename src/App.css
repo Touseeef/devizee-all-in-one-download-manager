@@ -567,3 +567,19 @@
   cursor: grabbing;
   transform: scale(1.2);
 }
+
+/* Indeterminate progress bar for the muxing/finalizing phase */
+@keyframes indeterminate-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.indeterminate-bar {
+  animation: indeterminate-sweep 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  will-change: transform;
+}
