@@ -91,6 +91,16 @@ export default function App() {
   const mainScrollRef = useRef<HTMLElement | null>(null);
   const videoStreamCache = useRef<Map<string, string>>(new Map());
 
+  // ─── F-A1: Silent auto-retry for transient download failures ───
+  // YouTube/CDNs intermittently throw 403 / rate-limits that yt-dlp reports
+  // as "unavailable" or "network". Retry silently before showing an error.
+  const AUTO_RETRY_MAX = 2;
+  const AUTO_RETRY_DELAY_MS = 2000;
+  const TRANSIENT_ERROR_CODES = new Set(["network", "unavailable"]);
+  const retryAttemptsRef = useRef<Map<string, number>>(new Map());
+  const historyRef = useRef<DownloadRecord[]>([]);
+  const handleRetryDownloadRef = useRef<((rec: DownloadRecord) => void) | null>(null);
+
   const resetInput = () => {
     setUrl("");
     setFetchError("");
@@ -380,6 +390,12 @@ export default function App() {
   });
 
   const [theme, setTheme] = useState<string>(() => settings.theme || localStorage.getItem("devizee_theme") || "dark");
+
+  // Keep refs in sync with latest state / callbacks so the download-progress
+  // listener can schedule retries without stale closures.
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   const updateSetting = (key: string, val: any) => {
     setSettings((prev: any) => {
@@ -896,11 +912,45 @@ export default function App() {
     const unlisten = listen<any>("download-progress", (event) => {
       const p = event.payload;
 
-      setHistory(prev => {
-        const idx = prev.findIndex(r => r.id === p.task_id);
+      // ─── F-A1: Silent auto-retry for transient errors ───
+      // If the failure is transient (network/unavailable) and we still have
+      // retry budget, schedule a background retry and swallow the error UI.
+      if (
+        p.status === "error" &&
+        p.error_code &&
+        TRANSIENT_ERROR_CODES.has(p.error_code)
+      ) {
+        const attempts = retryAttemptsRef.current.get(p.task_id) || 0;
+        if (attempts < AUTO_RETRY_MAX) {
+          retryAttemptsRef.current.set(p.task_id, attempts + 1);
+          console.log(
+            `[Auto-Retry] Scheduling attempt ${attempts + 1}/${AUTO_RETRY_MAX} for ${p.task_id}`
+          );
+          setTimeout(() => {
+            const rec = historyRef.current.find((h) => h.id === p.task_id);
+            if (rec && handleRetryDownloadRef.current) {
+              console.log(`[Auto-Retry] Firing retry for ${p.task_id}`);
+              handleRetryDownloadRef.current(rec);
+            }
+          }, AUTO_RETRY_DELAY_MS);
+          // Do NOT update state, do NOT push to errorBatch, do NOT notify.
+          // The record stays as "downloading" until the retry flips it back
+          // through Queued → Starting → Downloading.
+          return;
+        }
+        console.log(
+          `[Auto-Retry] Retries exhausted for ${p.task_id} — surfacing error`
+        );
+        // Fall through to normal error handling below
+      }
+
+      setHistory((prev) => {
+        const idx = prev.findIndex((r) => r.id === p.task_id);
         const oldStatus = idx !== -1 ? prev[idx].status : null;
 
         if (p.status === "completed" && oldStatus !== "completed") {
+          // Clear any retry counter for this task — it succeeded
+          retryAttemptsRef.current.delete(p.task_id);
           if (!completedBatch.current.includes(p.task_id)) {
             completedBatch.current.push(p.task_id);
           }
@@ -942,10 +992,9 @@ export default function App() {
     });
 
     return () => {
-      unlisten.then(f => f());
+      unlisten.then((f) => f());
     };
   }, []);
-
 
 
   // In-App Video Playback Trigger (Plays video on thumbnail click)
@@ -1646,6 +1695,12 @@ export default function App() {
       console.error("Retry download failed:", e);
     }
   };
+
+  // Keep the retry-handler ref current so the download-progress listener
+  // can invoke it without stale closures
+  useEffect(() => {
+    handleRetryDownloadRef.current = handleRetryDownload;
+  }, [handleRetryDownload]);
 
   const handleBatchDownload = async (formatId?: string, ext?: string, isAudio?: boolean) => {
     if (!playlistInfo) return;

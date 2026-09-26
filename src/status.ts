@@ -39,11 +39,11 @@ export interface StatusDisplay {
   label: string;
   /** Design-system color token name (see design-system skill), not a raw hex/Tailwind class. */
   colorToken:
-    | "accent"
-    | "status-success"
-    | "status-warning"
-    | "status-danger"
-    | "text-tertiary";
+  | "accent"
+  | "status-success"
+  | "status-warning"
+  | "status-danger"
+  | "text-tertiary";
   /** How the progress bar should render for this status. */
   progressMode: "determinate" | "indeterminate" | "hidden";
   isTerminal: boolean;
@@ -77,7 +77,7 @@ export const STATUS_DISPLAY: Record<TaskStatus, StatusDisplay> = {
     isTerminal: false,
   },
   muxing: {
-    label: "Muxing streams…",
+    label: "Finalizing…",
     colorToken: "accent",
     progressMode: "indeterminate",
     isTerminal: false,

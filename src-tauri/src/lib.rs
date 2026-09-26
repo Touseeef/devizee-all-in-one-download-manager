@@ -1004,6 +1004,20 @@ async fn start_download(
         });
 
         let mut final_file_path = None;
+
+        // ─── F-24: Throttle progress DB writes ───
+        // yt-dlp emits DEVIZEE_PROGRESS lines many times per second. Writing
+        // to SQLite on every tick blocks the DB mutex under multi-download
+        // load and stalls the UI. We write to the DB at most once per second
+        // per task, PLUS immediately whenever the status changes (Downloading
+        // → Muxing, etc.). Final states (Completed/Error) are written outside
+        // this loop and are always flushed.
+        let mut last_db_write = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap_or_else(std::time::Instant::now);
+        let mut last_db_status: Option<DownloadStatus> = None;
+        const DB_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+
         if let Some(stdout) = child.stdout.take() {
             let mut reader = BufReader::new(stdout);
             let mut buf = Vec::new();
@@ -1029,6 +1043,7 @@ async fn start_download(
                             DownloadStatus::Downloading
                         };
 
+                        // Always emit to the frontend for a live progress bar.
                         let _ = app_clone.emit(
                             "download-progress",
                             DownloadProgressPayload {
@@ -1042,17 +1057,29 @@ async fn start_download(
                                 file_path: None,
                             },
                         );
-                        if let Some(state) = app_clone.try_state::<AppState>() {
-                            let conn = state.db_conn.lock().unwrap();
-                            let _ = db::update_download_status(
-                                &conn,
-                                &task_id_clone,
-                                &status,
-                                percent,
-                                None,
-                                None,
-                                None,
-                            );
+
+                        // F-24: Throttle DB writes — status change flushes
+                        // immediately, otherwise at most once per second.
+                        let now = std::time::Instant::now();
+                        let status_changed = last_db_status.as_ref() != Some(&status);
+                        let interval_elapsed =
+                            now.duration_since(last_db_write) >= DB_WRITE_INTERVAL;
+
+                        if status_changed || interval_elapsed {
+                            if let Some(state) = app_clone.try_state::<AppState>() {
+                                let conn = state.db_conn.lock().unwrap();
+                                let _ = db::update_download_status(
+                                    &conn,
+                                    &task_id_clone,
+                                    &status,
+                                    percent,
+                                    None,
+                                    None,
+                                    None,
+                                );
+                            }
+                            last_db_write = now;
+                            last_db_status = Some(status.clone());
                         }
                     }
                 } else if let Some(idx) = line.find("Destination:") {
