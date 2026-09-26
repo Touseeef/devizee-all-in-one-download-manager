@@ -433,6 +433,33 @@ fn categorize_error(stderr: &str) -> &'static str {
     }
 }
 
+/// Max size of downloads.log before rotation. If the file exceeds this
+/// size, it is renamed to downloads.log.1 (replacing any previous .1) and
+/// a fresh downloads.log is created. Disk usage stays bounded at ~2x this.
+const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
+
+fn rotate_log_if_needed(log_file: &std::path::Path) {
+    // Only rotate if the file exists and exceeds the cap
+    let size = match std::fs::metadata(log_file) {
+        Ok(m) => m.len(),
+        Err(_) => return, // doesn't exist — nothing to rotate
+    };
+    if size < MAX_LOG_SIZE {
+        return;
+    }
+
+    let backup = log_file.with_extension("log.1");
+    // Remove the old backup if it exists (ignore errors — we're about to
+    // overwrite it anyway, and losing the previous .1 is acceptable)
+    let _ = std::fs::remove_file(&backup);
+    // Move the current file to .1
+    if std::fs::rename(log_file, &backup).is_err() {
+        // If rename fails (file locked, permission), truncate as fallback
+        // so we don't infinitely grow.
+        let _ = std::fs::write(log_file, b"");
+    }
+}
+
 fn log_download_error(
     app: &tauri::AppHandle,
     task_id: &str,
@@ -444,6 +471,10 @@ fn log_download_error(
         let logs_dir = app_dir.join("logs");
         let _ = std::fs::create_dir_all(&logs_dir);
         let log_file = logs_dir.join("downloads.log");
+
+        // Rotate BEFORE opening for append so a giant file doesn't block us.
+        rotate_log_if_needed(&log_file);
+
         use std::io::Write;
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
@@ -461,6 +492,62 @@ fn log_download_error(
             );
         }
     }
+}
+
+// ─── W3-2: Disk space pre-flight ───
+// Query free bytes on the volume containing the given path. Uses the
+// widest-available Windows API. Returns None on non-Windows or if the
+// query fails (caller should treat as "unknown, proceed anyway").
+#[cfg(target_os = "windows")]
+fn free_space_bytes_for_path(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    // Canonicalize the parent directory (the file itself may not exist yet)
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    // If the target dir doesn't exist yet, walk up until we find an existing one
+    let mut probe = dir.as_path();
+    while !probe.exists() {
+        probe = probe.parent()?;
+    }
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(probe)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut free_bytes: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_free: u64 = 0;
+
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_bytes as *mut u64,
+            &mut total_bytes as *mut u64,
+            &mut total_free as *mut u64,
+        )
+    };
+
+    if ok == 0 {
+        None
+    } else {
+        // On older Windows without large-disk support, total_free is authoritative
+        Some(if total_free > 0 {
+            total_free
+        } else {
+            free_bytes
+        })
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn free_space_bytes_for_path(_path: &std::path::Path) -> Option<u64> {
+    None
 }
 
 /// Single Source of Truth for Output Path Resolution
@@ -605,6 +692,7 @@ async fn start_download(
     download_sections: Option<String>,
     cookies_from_browser: Option<String>,
     filename_template: Option<String>,
+    estimated_size_bytes: Option<u64>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let yt_dlp_path = get_yt_dlp_path(&app)?;
@@ -629,6 +717,26 @@ async fn start_download(
                 "Cannot access download destination '{:?}': {}. Please check folder permissions or external drive connection.",
                 download_dir, e
             ));
+        }
+    }
+
+    // ─── W3-2: Disk-space pre-flight ───
+    // If the caller provided an estimated size, verify at least that much
+    // space is available (plus a 500 MB safety margin). This catches the
+    // "50 GB download onto a 40 GB drive" case before we spawn yt-dlp and
+    // trash the volume.
+    if let Some(estimated) = estimated_size_bytes {
+        const SAFETY_MARGIN_BYTES: u64 = 500 * 1024 * 1024; // 500 MB
+        if let Some(free) = free_space_bytes_for_path(&download_dir) {
+            let required = estimated.saturating_add(SAFETY_MARGIN_BYTES);
+            if free < required {
+                let free_gb = free as f64 / 1_073_741_824.0;
+                let needed_gb = required as f64 / 1_073_741_824.0;
+                return Err(format!(
+                    "Not enough disk space. This download needs approximately {:.2} GB free, but the destination drive only has {:.2} GB available. Free up space or choose a different folder.",
+                    needed_gb, free_gb
+                ));
+            }
         }
     }
 

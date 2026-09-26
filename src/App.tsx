@@ -1730,6 +1730,17 @@ export default function App() {
     const targetAudioDir = customFolder ? customFolder : (settings.audioFolder || null);
 
     try {
+      // W3-2: pass an estimated size so backend can pre-flight disk space
+      let estimatedSize: number | null = null;
+      if (info.video_formats) {
+        const m = info.video_formats.find((f: any) => f.format_id === formatId);
+        if (m?.filesize_approx) estimatedSize = m.filesize_approx;
+      }
+      if (!estimatedSize && info.audio_formats) {
+        const m = info.audio_formats.find((f: any) => f.format_id === formatId);
+        if (m?.filesize_approx) estimatedSize = m.filesize_approx;
+      }
+
       await invoke("start_download", {
         taskId: taskId,
         url: info.url,
@@ -1751,6 +1762,7 @@ export default function App() {
         scanAntivirus: settings.scanAntivirus,
         downloadSections: downloadSectionsArg,
         duplicateAction: duplicateAction || null,
+        estimatedSizeBytes: estimatedSize,
       });
     } catch (e: any) {
       console.error("Start download failed:", e);
@@ -1819,6 +1831,7 @@ export default function App() {
         scanAntivirus: settings.scanAntivirus,
         downloadSections: null,
         duplicateAction: "overwrite",
+        estimatedSizeBytes: record.file_size ?? null,
       });
     } catch (e: any) {
       console.error("Retry download failed:", e);
