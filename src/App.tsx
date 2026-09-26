@@ -27,7 +27,7 @@ import {
   isAudioFormat,
 } from "./lib/formatClassify";
 import { createTranslator } from "./lib/i18n";
-import { globalAudioState, routeAudioDevice, applyEqualizerPreset } from "./lib/audioContext";
+import { globalAudioState, routeAudioDevice, applyEqualizerPreset, attachEqualizerToMedia } from "./lib/audioContext";
 
 import { ConfirmDialog } from "./components/common/ConfirmDialog";
 import { SettingsTab } from "./components/settings/SettingsTab";
@@ -415,6 +415,10 @@ export default function App() {
   const volumeDebounceTimer = useRef<any>(null);
   const handleVolumeChange = (newVol: number) => {
     const clamped = Math.max(0, Math.min(1, newVol));
+    console.log("[Devizee Volume] change to", clamped, {
+      hasAudioRef: !!audioRef.current,
+      hasVideoRef: !!videoElementRef.current,
+    });
     setVolume(clamped);
     setIsMuted(clamped === 0);
     if (audioRef.current) audioRef.current.volume = clamped;
@@ -983,6 +987,11 @@ export default function App() {
 
     setActiveVideoPlaying(true);
 
+    // Attach the 8-band EQ to the dashboard video element (idempotent)
+    if (videoElementRef.current) {
+      attachEqualizerToMedia(videoElementRef.current);
+    }
+
     // Fast-Path for YouTube: Instant player activation without 4-7s yt-dlp latency
     const isYouTube = /youtu(\.be|be\.com)/i.test(targetVideo.url) || /^[a-zA-Z0-9_-]{11}$/.test(targetVideo.id);
     if (isYouTube) {
@@ -1069,6 +1078,8 @@ export default function App() {
 
     // Apply persisted volume
     audioRef.current.volume = isMuted ? 0 : volume;
+    // Ensure the shared EQ chain is attached before playback begins
+    attachEqualizerToMedia(audioRef.current);
 
     // Instant Playback from cache if already resolved
     if (audioStreamCache.current.has(songId)) {
@@ -1167,7 +1178,7 @@ export default function App() {
     if (audioRepeat === "one") {
       if (videoElementRef.current) {
         videoElementRef.current.currentTime = 0;
-        videoElementRef.current.play().catch(() => {});
+        videoElementRef.current.play().catch(() => { });
         if (videoInfo) transitionPlayback({ type: "video", id: videoInfo.id, state: "playing" });
       } else {
         sendIframeCommand("seekTo", [0, true]);
@@ -1402,7 +1413,7 @@ export default function App() {
       let hostname = "Web";
       try {
         hostname = new URL(line).hostname.replace(/^www\./, "");
-      } catch {}
+      } catch { }
 
       return {
         id: `batch-${Date.now()}-${idx}`,
@@ -1425,12 +1436,12 @@ export default function App() {
           prev.map((b) =>
             b.id === item.id
               ? {
-                  ...b,
-                  title: info.title || b.title,
-                  thumbnail: info.thumbnail || b.thumbnail,
-                  duration_string: info.duration_string,
-                  site: info.uploader || b.site,
-                }
+                ...b,
+                title: info.title || b.title,
+                thumbnail: info.thumbnail || b.thumbnail,
+                duration_string: info.duration_string,
+                site: info.uploader || b.site,
+              }
               : b
           )
         );
@@ -1847,7 +1858,7 @@ export default function App() {
       if (h.status === "downloading" || h.status === "starting" || h.status === "fetching_metadata" || h.status === "muxing") {
         try {
           await invoke("pause_download", { taskId: h.id });
-        } catch {}
+        } catch { }
       }
     }
     loadHistory();
@@ -1866,7 +1877,7 @@ export default function App() {
       if (h.status === "downloading" || h.status === "starting" || h.status === "queued" || h.status === "interrupted") {
         try {
           await invoke("cancel_download", { taskId: h.id });
-        } catch {}
+        } catch { }
       }
     }
     loadHistory();
@@ -1876,7 +1887,7 @@ export default function App() {
     for (const id of selectedHistoryItems) {
       try {
         await invoke("pause_download", { taskId: id });
-      } catch {}
+      } catch { }
     }
     loadHistory();
   };
@@ -1894,7 +1905,7 @@ export default function App() {
     for (const id of selectedHistoryItems) {
       try {
         await invoke("cancel_download", { taskId: id });
-      } catch {}
+      } catch { }
     }
     setSelectedHistoryItems(new Set());
     loadHistory();
@@ -1971,200 +1982,200 @@ export default function App() {
         {/* ===================== TAB 1: DASHBOARD ===================== */}
         <div className={activeTab === "dashboard" ? "tab-panel-active max-w-5xl xl:max-w-6xl mx-auto space-y-6" : "tab-panel-hidden max-w-5xl xl:max-w-6xl mx-auto space-y-6"}>
 
-            {/* URL Input Form */}
-            <UrlInput
-              url={url}
-              setUrl={setUrl}
-              isFetching={isFetching}
-              isSearchingYoutube={isSearchingYoutube}
-              onAnalyze={handleAnalyze}
-              onClear={resetInput}
-              onImportTxtLines={handleImportTxtLines}
-              placeholder={t("input_placeholder")}
-              labelAnalyze={t("btn_analyze")}
-              labelAnalyzing={t("analyzing")}
-              hasActiveResult={!!(videoInfo && showPreviews)}
-            />
+          {/* URL Input Form */}
+          <UrlInput
+            url={url}
+            setUrl={setUrl}
+            isFetching={isFetching}
+            isSearchingYoutube={isSearchingYoutube}
+            onAnalyze={handleAnalyze}
+            onClear={resetInput}
+            onImportTxtLines={handleImportTxtLines}
+            placeholder={t("input_placeholder")}
+            labelAnalyze={t("btn_analyze")}
+            labelAnalyzing={t("analyzing")}
+            hasActiveResult={!!(videoInfo && showPreviews)}
+          />
 
-            {fetchError && (
-              <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                <div className="text-body-sm font-medium">
-                  <span className="font-semibold">{t("analysis_failed")}: </span>{fetchError}
-                </div>
+          {fetchError && (
+            <div className="bg-status-danger-subtle p-3.5 rounded-md flex items-start gap-2.5 text-status-danger animate-in fade-in duration-fast">
+              <AlertCircle size={16} className="mt-0.5 shrink-0" />
+              <div className="text-body-sm font-medium">
+                <span className="font-semibold">{t("analysis_failed")}: </span>{fetchError}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* YouTube Keyword Search Results Grid */}
-            {searchResults && (
-              <SearchResults
-                results={searchResults}
-                onClose={() => setSearchResults(null)}
-                onInspect={(u) => {
-                  setUrl(u);
-                  analyzeUrl(u);
-                }}
-                onPlay={(entry) => handlePlayVideo(entry)}
-              />
-            )}
+          {/* YouTube Keyword Search Results Grid */}
+          {searchResults && (
+            <SearchResults
+              results={searchResults}
+              onClose={() => setSearchResults(null)}
+              onInspect={(u) => {
+                setUrl(u);
+                analyzeUrl(u);
+              }}
+              onPlay={(entry) => handlePlayVideo(entry)}
+            />
+          )}
 
-            {/* Single Video Card Preview with Integrated In-App Player */}
-            {videoInfo && showPreviews && (
-              <VideoCard
-                videoInfo={videoInfo}
-                settings={settings}
-                selectedFormat={selectedFormat}
-                setSelectedFormat={setSelectedFormat}
-                activeCardTask={activeCardTask}
-                onDismissProgress={() => setActiveCardTaskId(null)}
-                t={t}
-                isAnalyzing={isFetching}
-                vm={{
-                  activeVideoPlaying,
-                  isVideoLoading,
-                  videoStreamUrl,
-                  videoFullscreen,
-                  videoContainerRef,
-                  videoElementRef,
-                  iframeRef,
-                  previewingId,
-                  isAudioElementPlaying,
-                  isLoadingAudioId,
-                  previewTime,
-                  previewDuration,
-                  audioRef,
-                  volume,
-                  isMuted,
-                  isTrimming,
-                  setIsTrimming,
-                  trimStart,
-                  setTrimStart,
-                  trimEnd,
-                  setTrimEnd,
-                  handlePlayVideo,
-                  handleVideoEnded,
-                  toggleFullscreen,
-                  handleCloseVideoPlayer,
-                  exitFullscreenAndKeepPlaying,
-                  sendIframeCommand,
-                  toggleAudioPreview,
-                  handleSeek,
-                  handleSeekRelative,
-                  toggleMute,
-                  handleVolumeChange,
-                  adjustTrimTimestamp,
-                  handleStartDownload,
-                  handleRetryDownload,
-                  openFile,
-                  formatSeconds,
-                  setisAudioElementPlaying,
-                  setPreviewingId,
-                  transitionPlayback,
-                  nowPlaying,
-                  stopAudioPlayback,
-                  repeatMode: audioRepeat,
-                  cycleRepeatMode: cycleAudioRepeat,
-                  audioShuffle,
-                  toggleAudioShuffle,
-                  audioNext,
-                  audioPrev,
-                  playlistInfo,
-                  selectedPlaylistItems,
-                }}
-              />
-            )}
+          {/* Single Video Card Preview with Integrated In-App Player */}
+          {videoInfo && showPreviews && (
+            <VideoCard
+              videoInfo={videoInfo}
+              settings={settings}
+              selectedFormat={selectedFormat}
+              setSelectedFormat={setSelectedFormat}
+              activeCardTask={activeCardTask}
+              onDismissProgress={() => setActiveCardTaskId(null)}
+              t={t}
+              isAnalyzing={isFetching}
+              vm={{
+                activeVideoPlaying,
+                isVideoLoading,
+                videoStreamUrl,
+                videoFullscreen,
+                videoContainerRef,
+                videoElementRef,
+                iframeRef,
+                previewingId,
+                isAudioElementPlaying,
+                isLoadingAudioId,
+                previewTime,
+                previewDuration,
+                audioRef,
+                volume,
+                isMuted,
+                isTrimming,
+                setIsTrimming,
+                trimStart,
+                setTrimStart,
+                trimEnd,
+                setTrimEnd,
+                handlePlayVideo,
+                handleVideoEnded,
+                toggleFullscreen,
+                handleCloseVideoPlayer,
+                exitFullscreenAndKeepPlaying,
+                sendIframeCommand,
+                toggleAudioPreview,
+                handleSeek,
+                handleSeekRelative,
+                toggleMute,
+                handleVolumeChange,
+                adjustTrimTimestamp,
+                handleStartDownload,
+                handleRetryDownload,
+                openFile,
+                formatSeconds,
+                setisAudioElementPlaying,
+                setPreviewingId,
+                transitionPlayback,
+                nowPlaying,
+                stopAudioPlayback,
+                repeatMode: audioRepeat,
+                cycleRepeatMode: cycleAudioRepeat,
+                audioShuffle,
+                toggleAudioShuffle,
+                audioNext,
+                audioPrev,
+                playlistInfo,
+                selectedPlaylistItems,
+              }}
+            />
+          )}
 
-            {/* Batch Links Queue Panel */}
-            {batchQueueItems.length > 0 && (
-              <BatchQueuePanel
-                items={batchQueueItems}
-                onStartBatchDownload={handleStartBatchQueue}
-                onClearBatch={() => setBatchQueueItems([])}
-                onRemoveItem={(id) => setBatchQueueItems((prev) => prev.filter((b) => b.id !== id))}
-                onUpdateItemFormat={(id, fmt) =>
-                  setBatchQueueItems((prev) =>
-                    prev.map((b) => (b.id === id ? { ...b, format: fmt } : b))
-                  )
-                }
-                onPlayVideo={(item) =>
-                  handlePlayVideo({
-                    id: item.id,
-                    url: item.url,
-                    title: item.title,
-                    thumbnail: item.thumbnail,
-                    duration_string: item.duration_string || "",
-                  })
-                }
-                onPreviewAudio={toggleAudioPreview}
-                previewingId={previewingId}
-                isAudioElementPlaying={isAudioElementPlaying}
-                isLoadingAudioId={isLoadingAudioId}
-                previewTime={previewTime}
-                previewDuration={previewDuration}
-                onSeek={handleSeek}
-                onSeekRelative={handleSeekRelative}
-                onClosePreview={() => {
-                  if (audioRef.current) audioRef.current.pause();
-                  setisAudioElementPlaying(false);
-                  setPreviewingId(null);
-                  transitionPlayback({ type: "none" });
-                }}
-                audioRef={audioRef}
-                formatSeconds={formatSeconds}
-              />
-            )}
+          {/* Batch Links Queue Panel */}
+          {batchQueueItems.length > 0 && (
+            <BatchQueuePanel
+              items={batchQueueItems}
+              onStartBatchDownload={handleStartBatchQueue}
+              onClearBatch={() => setBatchQueueItems([])}
+              onRemoveItem={(id) => setBatchQueueItems((prev) => prev.filter((b) => b.id !== id))}
+              onUpdateItemFormat={(id, fmt) =>
+                setBatchQueueItems((prev) =>
+                  prev.map((b) => (b.id === id ? { ...b, format: fmt } : b))
+                )
+              }
+              onPlayVideo={(item) =>
+                handlePlayVideo({
+                  id: item.id,
+                  url: item.url,
+                  title: item.title,
+                  thumbnail: item.thumbnail,
+                  duration_string: item.duration_string || "",
+                })
+              }
+              onPreviewAudio={toggleAudioPreview}
+              previewingId={previewingId}
+              isAudioElementPlaying={isAudioElementPlaying}
+              isLoadingAudioId={isLoadingAudioId}
+              previewTime={previewTime}
+              previewDuration={previewDuration}
+              onSeek={handleSeek}
+              onSeekRelative={handleSeekRelative}
+              onClosePreview={() => {
+                if (audioRef.current) audioRef.current.pause();
+                setisAudioElementPlaying(false);
+                setPreviewingId(null);
+                transitionPlayback({ type: "none" });
+              }}
+              audioRef={audioRef}
+              formatSeconds={formatSeconds}
+            />
+          )}
 
-            {/* Playlist Banner & Items Drawer */}
-            {(playlistInfo || isLoadingPlaylist) && showPreviews && (
-              <PlaylistPanel
-                t={t}
-                playlistInfo={playlistInfo}
-                isLoadingPlaylist={isLoadingPlaylist}
-                showSection={showPlaylistSection}
-                setShowSection={setShowPlaylistSection}
-                selectedIds={selectedPlaylistItems}
-                toggleItem={togglePlaylistItem}
-                selectAll={selectAllPlaylist}
-                deselectAll={deselectAllPlaylist}
-                batchPreset={batchPreset}
-                setBatchPreset={setBatchPreset}
-                setBatchFormatId={setBatchFormatId}
-                setBatchExt={setBatchExt}
-                setBatchIsAudio={setBatchIsAudio}
-                onBatchDownload={() => handleBatchDownload()}
-                onSingleDownload={(entry, presetLabel) =>
-                  handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry, presetLabel)
-                }
-                onPlayVideo={handlePlayVideo}
-                onPreviewAudio={toggleAudioPreview}
-                previewingId={previewingId}
-                isAudioElementPlaying={isAudioElementPlaying}
-                isLoadingAudioId={isLoadingAudioId}
-                previewTime={previewTime}
-                previewDuration={previewDuration}
-                onSeek={handleSeek}
-                onSeekRelative={handleSeekRelative}
-                onClosePreview={() => {
-                  if (audioRef.current) audioRef.current.pause();
-                  setisAudioElementPlaying(false);
-                  setPreviewingId(null);
-                  transitionPlayback({ type: "none" });
-                }}
-                history={history}
-                audioRef={audioRef}
-              />
-            )}
+          {/* Playlist Banner & Items Drawer */}
+          {(playlistInfo || isLoadingPlaylist) && showPreviews && (
+            <PlaylistPanel
+              t={t}
+              playlistInfo={playlistInfo}
+              isLoadingPlaylist={isLoadingPlaylist}
+              showSection={showPlaylistSection}
+              setShowSection={setShowPlaylistSection}
+              selectedIds={selectedPlaylistItems}
+              toggleItem={togglePlaylistItem}
+              selectAll={selectAllPlaylist}
+              deselectAll={deselectAllPlaylist}
+              batchPreset={batchPreset}
+              setBatchPreset={setBatchPreset}
+              setBatchFormatId={setBatchFormatId}
+              setBatchExt={setBatchExt}
+              setBatchIsAudio={setBatchIsAudio}
+              onBatchDownload={() => handleBatchDownload()}
+              onSingleDownload={(entry, presetLabel) =>
+                handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry, presetLabel)
+              }
+              onPlayVideo={handlePlayVideo}
+              onPreviewAudio={toggleAudioPreview}
+              previewingId={previewingId}
+              isAudioElementPlaying={isAudioElementPlaying}
+              isLoadingAudioId={isLoadingAudioId}
+              previewTime={previewTime}
+              previewDuration={previewDuration}
+              onSeek={handleSeek}
+              onSeekRelative={handleSeekRelative}
+              onClosePreview={() => {
+                if (audioRef.current) audioRef.current.pause();
+                setisAudioElementPlaying(false);
+                setPreviewingId(null);
+                transitionPlayback({ type: "none" });
+              }}
+              history={history}
+              audioRef={audioRef}
+            />
+          )}
 
-            {/* BatchProgressView for Playlist Bulk Downloads */}
-            {activePlaylistBatch && (
-              <BatchProgress
-                title={activePlaylistBatch.title}
-                taskIds={activePlaylistBatch.taskIds}
-                formatLabel={activePlaylistBatch.formatLabel}
-                history={history}
-                onClear={() => setActivePlaylistBatch(null)}
-              />
-            )}
+          {/* BatchProgressView for Playlist Bulk Downloads */}
+          {activePlaylistBatch && (
+            <BatchProgress
+              title={activePlaylistBatch.title}
+              taskIds={activePlaylistBatch.taskIds}
+              formatLabel={activePlaylistBatch.formatLabel}
+              history={history}
+              onClear={() => setActivePlaylistBatch(null)}
+            />
+          )}
         </div>
 
         {/* ===================== TAB 2: DOWNLOADS ===================== */}
@@ -2217,6 +2228,10 @@ export default function App() {
             onNowPlayingChange={transitionPlayback}
             selectedAudioDevice={selectedAudioDevice}
             nowPlaying={nowPlaying}
+            volume={volume}
+            isMuted={isMuted}
+            onVolumeChange={handleVolumeChange}
+            onToggleMute={toggleMute}
           />
         </div>
 

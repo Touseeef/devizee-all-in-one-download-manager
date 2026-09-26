@@ -1,20 +1,10 @@
-// src/lib/audioContext.ts
 
-/**
- * Shared AudioContext + AnalyserNode + 8-Band Equalizer registry.
- * A single AudioContext is reused for the entire app.
- */
+
 export const globalAudioState: { ctx: AudioContext | null } = { ctx: null };
-
-export const analysers = new WeakMap<HTMLMediaElement, AnalyserNode>();
 
 export const EQ_FREQUENCIES = [60, 150, 400, 1000, 2400, 6000, 12000, 16000];
 
-export type EqPreset = {
-    id: string;
-    name: string;
-    gains: number[];
-};
+export type EqPreset = { id: string; name: string; gains: number[] };
 
 export const EQ_PRESETS: EqPreset[] = [
     { id: "flat", name: "Flat (Default)", gains: [0, 0, 0, 0, 0, 0, 0, 0] },
@@ -27,54 +17,102 @@ export const EQ_PRESETS: EqPreset[] = [
     { id: "treble", name: "Treble Boost", gains: [-2, -1, 0, 0, 1.5, 3, 5, 6] },
 ];
 
-// Load persisted gains or default to 0dB flat
 let initialGains = [0, 0, 0, 0, 0, 0, 0, 0];
 try {
     const saved = localStorage.getItem("devizee_eq_bands");
     if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length === 8) {
-            initialGains = parsed;
-        }
+        if (Array.isArray(parsed) && parsed.length === 8) initialGains = parsed;
     }
-} catch {}
-
+} catch { }
 export let currentEqGains: number[] = initialGains;
 
+const elementSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 const elementFilterChains = new WeakMap<HTMLMediaElement, BiquadFilterNode[]>();
 const allActiveFilterChains = new Set<BiquadFilterNode[]>();
 
-/**
- * Safeguarded Equalizer connection.
- * Note: In Chromium WebView2, invoking createMediaElementSource on streaming remote
- * media lacking permissive CORS response headers forces the audio pipeline into zeroed silence.
- * To guarantee 100% audio playback across all platforms and external streaming providers,
- * we safely preserve native element audio routing.
- */
-export function attachEqualizerToMedia(element: HTMLMediaElement): BiquadFilterNode[] | null {
-    if (elementFilterChains.has(element)) {
-        return elementFilterChains.get(element)!;
+/** Ensure a single shared AudioContext exists and is running. */
+export function ensureAudioContext(): AudioContext | null {
+    if (!globalAudioState.ctx) {
+        try {
+            const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+            globalAudioState.ctx = new Ctx();
+        } catch (e) {
+            console.error("[Devizee EQ] Cannot create AudioContext:", e);
+            return null;
+        }
     }
-    return null;
+    const ctx = globalAudioState.ctx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => { });
+    return ctx;
 }
 
 /**
- * Updates gain values for all 8 bands across all active media elements in real-time.
+ * Attach an 8-band EQ chain to a media element.
+ * IMPORTANT: must be called BEFORE the media element starts loading
+ * (i.e. before setting src). Requires the element to have
+ * crossOrigin="anonymous" for cross-origin (asset://) sources.
  */
+export function attachEqualizerToMedia(element: HTMLMediaElement): boolean {
+    if (elementFilterChains.has(element)) return true;
+
+    const ctx = ensureAudioContext();
+    if (!ctx) return false;
+
+    try {
+        // createMediaElementSource can only be called ONCE per element per context
+        let source: MediaElementAudioSourceNode;
+        try {
+            source = ctx.createMediaElementSource(element);
+        } catch (err: any) {
+            // Already attached in a previous session or already routed
+            console.warn("[Devizee EQ] createMediaElementSource failed:", err?.message || err);
+            return false;
+        }
+
+        const filters: BiquadFilterNode[] = [];
+        for (let i = 0; i < EQ_FREQUENCIES.length; i++) {
+            const f = ctx.createBiquadFilter();
+            f.type = "peaking";
+            f.frequency.value = EQ_FREQUENCIES[i];
+            f.Q.value = 1.0;
+            f.gain.value = currentEqGains[i] ?? 0;
+            filters.push(f);
+        }
+
+        // Chain: source → f0 → f1 → … → f7 → destination
+        let node: AudioNode = source;
+        for (const f of filters) {
+            node.connect(f);
+            node = f;
+        }
+        node.connect(ctx.destination);
+
+        elementSources.set(element, source);
+        elementFilterChains.set(element, filters);
+        allActiveFilterChains.add(filters);
+
+        console.log("[Devizee EQ] Attached 8-band EQ");
+        return true;
+    } catch (e) {
+        console.error("[Devizee EQ] attach failed:", e);
+        return false;
+    }
+}
+
+/** Update gain for all 8 bands across all attached elements, in real time. */
 export function setGlobalEqualizerGains(gains: number[]) {
     currentEqGains = [...gains];
-    try {
-        localStorage.setItem("devizee_eq_bands", JSON.stringify(gains));
-    } catch {}
+    try { localStorage.setItem("devizee_eq_bands", JSON.stringify(gains)); } catch { }
 
     const ctx = globalAudioState.ctx;
     const now = ctx ? ctx.currentTime : 0;
 
     allActiveFilterChains.forEach((filters) => {
         filters.forEach((filter, idx) => {
-            const val = gains[idx] !== undefined ? gains[idx] : 0;
+            const val = gains[idx] ?? 0;
             if (ctx) {
-                filter.gain.setTargetAtTime(val, now, 0.05);
+                filter.gain.setTargetAtTime(val, now, 0.03);
             } else {
                 filter.gain.value = val;
             }
@@ -82,44 +120,33 @@ export function setGlobalEqualizerGains(gains: number[]) {
     });
 }
 
-/**
- * Applies a named EQ profile preset across all media.
- */
 export function applyEqualizerPreset(presetId: string): EqPreset {
     const preset = EQ_PRESETS.find((p) => p.id === presetId) || EQ_PRESETS[0];
     setGlobalEqualizerGains(preset.gains);
-    try {
-        localStorage.setItem("devizee_eq_preset", preset.id);
-    } catch {}
+    try { localStorage.setItem("devizee_eq_preset", preset.id); } catch { }
     return preset;
 }
 
-/**
- * Safe hardware speaker and audio output routing with automatic fallback.
- */
+/** Route audio to a specific hardware output. Element first, then context. */
 export async function routeAudioDevice(deviceId: string, element?: HTMLMediaElement | null) {
     const target = deviceId === "default" || !deviceId ? "" : deviceId;
 
-    // 1. Route Web Audio context destination if supported
-    if (globalAudioState.ctx && typeof (globalAudioState.ctx as any).setSinkId === "function") {
-        try {
-            await (globalAudioState.ctx as any).setSinkId(target);
-        } catch (e) {
-            console.warn("AudioContext setSinkId failed:", e);
-        }
-    }
-
-    // 2. Route media element directly
     if (element && typeof (element as any).setSinkId === "function") {
         try {
             await (element as any).setSinkId(target);
         } catch (e) {
-            console.warn("MediaElement setSinkId failed, falling back to default:", e);
+            console.warn("[Devizee Audio] Element setSinkId failed:", e);
             if (target !== "") {
-                try {
-                    await (element as any).setSinkId("");
-                } catch (_) {}
+                try { await (element as any).setSinkId(""); } catch { }
             }
+        }
+    }
+
+    if (globalAudioState.ctx && typeof (globalAudioState.ctx as any).setSinkId === "function") {
+        try {
+            await (globalAudioState.ctx as any).setSinkId(target);
+        } catch (e) {
+            console.warn("[Devizee Audio] Context setSinkId failed:", e);
         }
     }
 }

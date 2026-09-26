@@ -19,6 +19,8 @@ import { SettingsSection } from "../common/SettingsSection";
 import { SettingRow, SettingToggle } from "../common/SettingRow";
 import { ThemeDropdown } from "../common/ThemeDropdown";
 import type { TranslationKey } from "../../lib/i18n";
+import { VerticalEqSlider } from "../common/VerticalEqSlider";
+
 
 import { currentEqGains, setGlobalEqualizerGains } from "../../lib/audioContext";
 
@@ -108,13 +110,11 @@ export function SettingsTab({
     };
 
     const handleBandChange = (index: number, val: number) => {
-        setEqBands((prev) => {
-            const next = [...prev];
-            next[index] = val;
-            setGlobalEqualizerGains(next);
-            return next;
-        });
+        const next = [...eqBands];
+        next[index] = val;
+        setEqBands(next);
         setActivePreset("Custom");
+        setGlobalEqualizerGains(next);
     };
 
     return (
@@ -129,11 +129,10 @@ export function SettingsTab({
                             key={tab.id}
                             type="button"
                             onClick={() => setActiveSection(tab.id)}
-                            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-caption font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-                                isActive
-                                    ? "bg-accent text-white shadow-xs"
-                                    : "text-secondary hover:text-primary hover:bg-surface-2"
-                            }`}
+                            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-caption font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${isActive
+                                ? "bg-accent text-white shadow-xs"
+                                : "text-secondary hover:text-primary hover:bg-surface-2"
+                                }`}
                             title={`Switch to ${tab.label}`}
                         >
                             <Icon size={15} />
@@ -659,40 +658,40 @@ export function SettingsTab({
                                     key={name}
                                     type="button"
                                     onClick={() => applyEqPreset(name)}
-                                    className={`px-3 py-1 rounded-lg text-caption font-semibold transition-all shrink-0 cursor-pointer ${
-                                        activePreset === name
-                                            ? "bg-accent text-white shadow-2xs font-bold"
-                                            : "bg-surface-2 text-secondary hover:text-primary hover:bg-surface-3 border border-border-subtle/50"
-                                    }`}
+                                    className={`px-3 py-1 rounded-lg text-caption font-semibold transition-all shrink-0 cursor-pointer ${activePreset === name
+                                        ? "bg-accent text-white shadow-2xs font-bold"
+                                        : "bg-surface-2 text-secondary hover:text-primary hover:bg-surface-3 border border-border-subtle/50"
+                                        }`}
                                 >
                                     {name}
                                 </button>
                             ))}
                         </div>
 
-                        {/* Sliders Grid */}
-                        <div className="p-5 bg-surface-2/60 rounded-xl border border-border-subtle/70 space-y-4">
-                            <div className="grid grid-cols-8 gap-2 sm:gap-4 items-end justify-items-center h-44 pt-4">
+                        {/* Sliders Grid — Custom Pointer-Based Sliders */}
+                        <div className="p-5 bg-surface-2/60 rounded-xl border border-border-subtle/70">
+                            <div className="grid grid-cols-8 gap-3 sm:gap-5 justify-items-center">
                                 {eqBands.map((gain, i) => (
-                                    <div key={EQ_FREQUENCIES[i]} className="flex flex-col items-center h-full justify-between w-full">
-                                        <span className={`text-[10px] font-mono font-bold ${gain > 0 ? "text-accent" : gain < 0 ? "text-status-warning" : "text-tertiary"}`}>
-                                            {gain > 0 ? `+${gain}` : gain}dB
+                                    <div key={EQ_FREQUENCIES[i]} className="flex flex-col items-center">
+                                        <span
+                                            className={`text-[11px] font-mono font-bold mb-2 w-10 text-center ${gain > 0
+                                                ? "text-accent"
+                                                : gain < 0
+                                                    ? "text-status-warning"
+                                                    : "text-tertiary"
+                                                }`}
+                                        >
+                                            {gain > 0 ? `+${gain}` : gain}
                                         </span>
-                                        <div className="relative flex-1 w-full flex items-center justify-center my-1.5">
-                                            {/* Center line (0dB reference) */}
-                                            <div className="absolute w-full h-[1px] bg-border-subtle pointer-events-none top-1/2 -translate-y-1/2" />
-                                            <input
-                                                type="range"
-                                                min="-12"
-                                                max="12"
-                                                step="1"
-                                                value={gain}
-                                                onChange={(e) => handleBandChange(i, parseInt(e.target.value))}
-                                                className="appearance-none w-28 -rotate-90 origin-center bg-transparent cursor-pointer h-2 accent-accent z-10"
-                                                title={`${EQ_FREQUENCIES[i]}: ${gain}dB`}
-                                            />
-                                        </div>
-                                        <span className="text-[11px] font-bold text-secondary text-center mt-1">
+
+                                        <VerticalEqSlider
+                                            value={gain}
+                                            min={-12}
+                                            max={12}
+                                            onChange={(v) => handleBandChange(i, v)}
+                                        />
+
+                                        <span className="text-[11px] font-bold text-secondary text-center mt-2">
                                             {EQ_FREQUENCIES[i]}
                                         </span>
                                     </div>

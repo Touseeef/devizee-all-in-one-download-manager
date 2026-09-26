@@ -32,9 +32,9 @@ import type { DownloadRecord, NowPlaying } from "../../types";
 import type { TranslationKey } from "../../lib/i18n";
 import { formatFileSize } from "../../lib/format";
 import { formatDisplayBadge } from "../../lib/formatClassify";
+import { routeAudioDevice, attachEqualizerToMedia } from "../../lib/audioContext";
 import { WaveformVisualizer } from "../common/WaveformVisualizer";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { routeAudioDevice } from "../../lib/audioContext";
 
 function safeConvertFileSrc(filePath: string): string {
     const sanitized = filePath.replace(/#/g, "%23").replace(/\?/g, "%3F");
@@ -63,6 +63,10 @@ export function MultimediaTab({
     onNowPlayingChange,
     selectedAudioDevice,
     nowPlaying,
+    volume,
+    isMuted,
+    onVolumeChange,
+    onToggleMute,
 }: {
     t: (key: TranslationKey) => string;
     history: DownloadRecord[];
@@ -76,6 +80,10 @@ export function MultimediaTab({
     onNowPlayingChange?: (now: NowPlaying) => void;
     selectedAudioDevice?: string;
     nowPlaying?: NowPlaying;
+    volume: number;
+    isMuted: boolean;
+    onVolumeChange: (v: number) => void;
+    onToggleMute: () => void;
 }) {
     // Filters & view modes
     const [mediaFilter, setMediaFilter] = useState<"all" | "videos" | "audios">("all");
@@ -93,8 +101,6 @@ export function MultimediaTab({
     const [scrubValue, setScrubValue] = useState(0);
     const [isShuffle, setIsShuffle] = useState(false);
     const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
-    const [volume, setVolume] = useState(1);
-    const [isMuted, setIsMuted] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showNetflixDrawer, setShowNetflixDrawer] = useState(false);
 
@@ -104,6 +110,24 @@ export function MultimediaTab({
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const mediaContainerRef = useRef<HTMLDivElement | null>(null);
+
+    // Guard: media elements fire a spurious `ended` event when src is changed
+    // mid-playback (pause() + load() causes an implicit abort that some
+    // WebView2 builds report as `ended`). Without this guard, every rapid
+    // click cascades a spurious `handleNext()` and the queue jumps tracks.
+    const suppressEndedRef = useRef(false);
+
+    // Deferred video play: when clicking a video for the first time, the
+    // <video> element isn't mounted yet (it lives inside a conditional block).
+    // We stash the intent here and flush it in a useEffect after re-render.
+    const pendingVideoPlayRef = useRef<string | null>(null);
+
+    // Attach the 8-band Web Audio equalizer to the media elements.
+    // Runs once after mount — attach is idempotent, so repeated calls are safe.
+    useEffect(() => {
+        if (audioRef.current) attachEqualizerToMedia(audioRef.current);
+        if (videoRef.current) attachEqualizerToMedia(videoRef.current);
+    }, []);
 
     // Filter completed multimedia items
     const allMediaItems = useMemo(() => {
@@ -165,25 +189,20 @@ export function MultimediaTab({
     }, []);
 
     const handleVolumeChange = (newVol: number) => {
-        setVolume(newVol);
-        if (videoRef.current) videoRef.current.volume = isMuted ? 0 : newVol;
-        if (audioRef.current) audioRef.current.volume = isMuted ? 0 : newVol;
+        onVolumeChange(newVol);
     };
 
     const toggleMute = () => {
-        const next = !isMuted;
-        setIsMuted(next);
-        if (videoRef.current) videoRef.current.volume = next ? 0 : volume;
-        if (audioRef.current) audioRef.current.volume = next ? 0 : volume;
+        onToggleMute();
     };
 
     const toggleFullscreen = () => {
         if (!mediaContainerRef.current) return;
         if (!document.fullscreenElement) {
-            mediaContainerRef.current.requestFullscreen().catch(() => {});
+            mediaContainerRef.current.requestFullscreen().catch(() => { });
             setIsFullscreen(true);
         } else {
-            document.exitFullscreen().catch(() => {});
+            document.exitFullscreen().catch(() => { });
             setIsFullscreen(false);
         }
     };
@@ -255,71 +274,154 @@ export function MultimediaTab({
         routeAudioDevice(selectedAudioDevice || "default", el);
     }, [selectedAudioDevice, activePlayingItem]);
 
-    // Mutual exclusion: pause if media outside Multimedia starts playing
+    // Sync global master volume into whichever media element is loaded
     useEffect(() => {
-        if (!activePlayingItem) return;
-        if (!nowPlaying || nowPlaying.type === "none" || nowPlaying.id !== activePlayingItem.id) {
-            if (videoRef.current && !videoRef.current.paused) {
-                videoRef.current.pause();
-            }
-            if (audioRef.current && !audioRef.current.paused) {
-                audioRef.current.pause();
-            }
+        const effective = isMuted ? 0 : volume;
+        if (videoRef.current) {
+            videoRef.current.volume = effective;
+            attachEqualizerToMedia(videoRef.current);
+        }
+        if (audioRef.current) {
+            audioRef.current.volume = effective;
+            attachEqualizerToMedia(audioRef.current);
+        }
+    }, [volume, isMuted, activePlayingItem]);
+
+    // Sync the global master volume to whichever media element is loaded
+    useEffect(() => {
+        const effective = isMuted ? 0 : volume;
+        if (videoRef.current) videoRef.current.volume = effective;
+        if (audioRef.current) audioRef.current.volume = effective;
+    }, [volume, isMuted, activePlayingItem]);
+
+    // Mutual exclusion: pause if media outside Multimedia starts playing.
+    // We use a ref for activePlayingItem to avoid this effect firing on
+    // activePlayingItem changes — only on real nowPlaying changes.
+    const activePlayingItemRef = useRef<DownloadRecord | null>(null);
+    useEffect(() => {
+        activePlayingItemRef.current = activePlayingItem;
+    }, [activePlayingItem]);
+
+    useEffect(() => {
+        if (!nowPlaying || nowPlaying.type === "none") return;
+        const active = activePlayingItemRef.current;
+        if (!active) return;
+        // If the parent's nowPlaying is for a DIFFERENT item AND it did
+        // not originate from Multimedia, pause our media.
+        if (nowPlaying.id !== active.id && nowPlaying.source !== "multimedia") {
+            if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
+            if (audioRef.current && !audioRef.current.paused) audioRef.current.pause();
             setIsPlaying(false);
         }
-    }, [nowPlaying, activePlayingItem]);
+    }, [nowPlaying]);
 
     // Play Item In-App with strict single-element playback
+    const playRequestIdRef = useRef(0);
+
     const playMediaItem = (item: DownloadRecord) => {
         if (!item.file_path) return;
+        const requestId = ++playRequestIdRef.current;
 
         setVideoError(null);
-
-        // Stop any external preview audio in App.tsx
-        if (stopGlobalAudioPlayback) {
-            stopGlobalAudioPlayback();
-        }
+        stopGlobalAudioPlayback?.();
 
         setActivePlayingItem(item);
         setIsPlaying(true);
         setCurrentTime(0);
+        setDuration(0);
 
         const src = safeConvertFileSrc(item.file_path);
         const isVid = isVideoFormat(item.format);
 
-        stopGlobalAudioPlayback?.();
-        onNowPlayingChange?.({ type: isVid ? "video" : "audio", id: item.id, state: "playing", source: "multimedia" });
+        onNowPlayingChange?.({
+            type: isVid ? "video" : "audio",
+            id: item.id,
+            state: "playing",
+            source: "multimedia",
+        });
+
+        // Suppress any spurious `ended` that fires from the src-change abort
+        suppressEndedRef.current = true;
 
         if (isVid) {
-            // Strict mutual exclusion: kill audio element completely
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = "";
+            // Pause the other element but DO NOT wipe its src (race trigger)
+            if (audioRef.current) audioRef.current.pause();
+
+            const el = videoRef.current;
+            if (!el) {
+                // Video element not mounted yet (first click on a video).
+                // Stash and let the useEffect flush it after React re-renders.
+                pendingVideoPlayRef.current = src;
+                return;
             }
-            if (videoRef.current) {
-                videoRef.current.src = src;
-                videoRef.current.volume = isMuted ? 0 : volume;
-                routeAudioDevice(selectedAudioDevice || "default", videoRef.current);
-                videoRef.current.play().catch((err) => {
-                    console.warn("Video play failed:", err);
+            el.pause();
+            attachEqualizerToMedia(el);       // idempotent — runs once
+            el.src = src;
+            el.volume = isMuted ? 0 : volume;
+            routeAudioDevice(selectedAudioDevice || "default", el);
+            el.load();
+            el.play()
+                .then(() => {
+                    if (requestId !== playRequestIdRef.current) return;
+                    suppressEndedRef.current = false;
+                })
+                .catch((err: any) => {
+                    if (requestId !== playRequestIdRef.current) return; // stale request — ignore
+                    console.warn("[Multimedia] Video play failed:", err?.name || err);
+                    suppressEndedRef.current = false;
                 });
-            }
         } else {
-            // Strict mutual exclusion: kill video element completely
-            if (videoRef.current) {
-                videoRef.current.pause();
-                videoRef.current.src = "";
-            }
-            if (audioRef.current) {
-                audioRef.current.src = src;
-                audioRef.current.volume = isMuted ? 0 : volume;
-                routeAudioDevice(selectedAudioDevice || "default", audioRef.current);
-                audioRef.current.play().catch((err) => {
-                    console.warn("Audio play failed:", err);
+            if (videoRef.current) videoRef.current.pause();
+
+            const el = audioRef.current;
+            if (!el) return;
+            el.pause();
+            attachEqualizerToMedia(el);       // idempotent — runs once
+            el.src = src;
+            el.volume = isMuted ? 0 : volume;
+            routeAudioDevice(selectedAudioDevice || "default", el);
+            el.load();
+            el.play()
+                .then(() => {
+                    if (requestId !== playRequestIdRef.current) return;
+                    suppressEndedRef.current = false;
+                })
+                .catch((err: any) => {
+                    if (requestId !== playRequestIdRef.current) return; // stale
+                    console.warn("[Multimedia] Audio play failed:", err?.name || err);
+                    suppressEndedRef.current = false;
                 });
-            }
         }
     };
+
+    // Flush deferred video play once the <video> element has mounted
+    useEffect(() => {
+        if (!pendingVideoPlayRef.current) return;
+        const el = videoRef.current;
+        if (!el) return;
+
+        const src = pendingVideoPlayRef.current;
+        pendingVideoPlayRef.current = null;
+
+        // Guard the src-change race on the deferred path too
+        suppressEndedRef.current = true;
+
+        el.pause();
+        attachEqualizerToMedia(el);
+        el.src = src;
+        el.volume = isMuted ? 0 : volume;
+        routeAudioDevice(selectedAudioDevice || "default", el);
+        el.load();
+        el.play()
+            .then(() => {
+                suppressEndedRef.current = false;
+            })
+            .catch((err: any) => {
+                console.warn("[Multimedia] Deferred video play failed:", err?.name || err);
+                suppressEndedRef.current = false;
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activePlayingItem]);
 
     const togglePlayPause = () => {
         if (!activePlayingItem) return;
@@ -331,7 +433,7 @@ export function MultimediaTab({
             element.pause();
             onNowPlayingChange?.({ type: isVid ? "video" : "audio", id: activePlayingItem.id, state: "paused", source: "multimedia" });
         } else {
-            element.play().catch(() => {});
+            element.play().catch(() => { });
             onNowPlayingChange?.({ type: isVid ? "video" : "audio", id: activePlayingItem.id, state: "playing", source: "multimedia" });
         }
     };
@@ -372,8 +474,15 @@ export function MultimediaTab({
     };
 
     const handleMediaEnded = () => {
-        if (repeatMode === "one" && activePlayingItem) {
-            playMediaItem(activePlayingItem);
+        // Ignore spurious `ended` events that fire during a src transition.
+        if (suppressEndedRef.current) {
+            console.log("[Multimedia] Suppressed spurious ended event");
+            return;
+        }
+
+        const active = activePlayingItemRef.current;
+        if (repeatMode === "one" && active) {
+            playMediaItem(active);
             return;
         }
         handleNext();
@@ -447,7 +556,8 @@ export function MultimediaTab({
             {/* Hidden Single HTML Audio Element for Audio Playback */}
             <audio
                 ref={audioRef}
-                preload="metadata"
+                preload="auto"
+                crossOrigin="anonymous"
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onTimeUpdate={() => {
@@ -473,11 +583,20 @@ export function MultimediaTab({
                             {activeItemIsVideo ? (
                                 <video
                                     ref={videoRef}
-                                    preload="metadata"
-                                    onPlay={() => {
-                                        setIsPlaying(true);
-                                    }}
+                                    preload="auto"
+                                    playsInline
+                                    crossOrigin="anonymous"
+                                    onPlay={() => setIsPlaying(true)}
                                     onPause={() => setIsPlaying(false)}
+                                    onLoadedData={() => {
+                                        // Re-sync volume only. Do NOT call play() here —
+                                        // src changes are driven by playMediaItem, which
+                                        // already calls play() explicitly. Auto-playing
+                                        // on loadeddata causes hover/refocus surprises.
+                                        if (videoRef.current) {
+                                            videoRef.current.volume = isMuted ? 0 : volume;
+                                        }
+                                    }}
                                     onError={() => {
                                         setVideoError("Playback failed or codec is not supported in built-in player.");
                                     }}
@@ -704,9 +823,8 @@ export function MultimediaTab({
                                             <button
                                                 type="button"
                                                 onClick={() => setIsShuffle(!isShuffle)}
-                                                className={`p-2 rounded-lg transition-colors cursor-pointer ${
-                                                    isShuffle ? "text-accent bg-accent/20" : "text-white/70 hover:text-white hover:bg-white/15"
-                                                }`}
+                                                className={`p-2 rounded-lg transition-colors cursor-pointer ${isShuffle ? "text-accent bg-accent/20" : "text-white/70 hover:text-white hover:bg-white/15"
+                                                    }`}
                                                 title={isShuffle ? "Shuffle On" : "Shuffle Off"}
                                             >
                                                 <Shuffle size={16} />
@@ -714,9 +832,8 @@ export function MultimediaTab({
                                             <button
                                                 type="button"
                                                 onClick={() => setRepeatMode(repeatMode === "off" ? "all" : repeatMode === "all" ? "one" : "off")}
-                                                className={`p-2 rounded-lg transition-colors cursor-pointer ${
-                                                    repeatMode !== "off" ? "text-accent bg-accent/20" : "text-white/70 hover:text-white hover:bg-white/15"
-                                                }`}
+                                                className={`p-2 rounded-lg transition-colors cursor-pointer ${repeatMode !== "off" ? "text-accent bg-accent/20" : "text-white/70 hover:text-white hover:bg-white/15"
+                                                    }`}
                                                 title={`Repeat: ${repeatMode}`}
                                             >
                                                 {repeatMode === "one" ? <Repeat1 size={16} /> : <Repeat size={16} />}
@@ -724,9 +841,8 @@ export function MultimediaTab({
                                             <button
                                                 type="button"
                                                 onClick={() => setShowNetflixDrawer(!showNetflixDrawer)}
-                                                className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
-                                                    showNetflixDrawer ? "bg-accent text-white border-accent" : "bg-white/15 hover:bg-white/25 text-white border-white/15"
-                                                }`}
+                                                className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${showNetflixDrawer ? "bg-accent text-white border-accent" : "bg-white/15 hover:bg-white/25 text-white border-white/15"
+                                                    }`}
                                                 title="Toggle Queue"
                                             >
                                                 <ListMusic size={15} />
@@ -780,9 +896,8 @@ export function MultimediaTab({
                                     <button
                                         type="button"
                                         onClick={() => setIsShuffle(!isShuffle)}
-                                        className={`p-2 rounded-lg transition-colors cursor-pointer ${
-                                            isShuffle ? "text-accent font-bold bg-accent-subtle" : "text-tertiary hover:text-primary"
-                                        }`}
+                                        className={`p-2 rounded-lg transition-colors cursor-pointer ${isShuffle ? "text-accent font-bold bg-accent-subtle" : "text-tertiary hover:text-primary"
+                                            }`}
                                         title={isShuffle ? "Shuffle On" : "Shuffle Off"}
                                     >
                                         <Shuffle size={15} />
@@ -820,9 +935,8 @@ export function MultimediaTab({
                                         onClick={() => {
                                             setRepeatMode(repeatMode === "off" ? "all" : repeatMode === "all" ? "one" : "off");
                                         }}
-                                        className={`p-2 rounded-lg transition-colors cursor-pointer ${
-                                            repeatMode !== "off" ? "text-accent font-bold bg-accent-subtle" : "text-tertiary hover:text-primary"
-                                        }`}
+                                        className={`p-2 rounded-lg transition-colors cursor-pointer ${repeatMode !== "off" ? "text-accent font-bold bg-accent-subtle" : "text-tertiary hover:text-primary"
+                                            }`}
                                         title={`Repeat: ${repeatMode}`}
                                     >
                                         {repeatMode === "one" ? <Repeat1 size={15} /> : <Repeat size={15} />}
@@ -931,11 +1045,10 @@ export function MultimediaTab({
                                             <div
                                                 key={item.id}
                                                 onClick={() => playMediaItem(item)}
-                                                className={`flex items-center justify-between p-1.5 rounded-lg transition-colors cursor-pointer group ${
-                                                    isCurrentItem
-                                                        ? "bg-accent/15 border border-accent/40 shadow-2xs"
-                                                        : "bg-surface-2 hover:bg-surface-3"
-                                                }`}
+                                                className={`flex items-center justify-between p-1.5 rounded-lg transition-colors cursor-pointer group ${isCurrentItem
+                                                    ? "bg-accent/15 border border-accent/40 shadow-2xs"
+                                                    : "bg-surface-2 hover:bg-surface-3"
+                                                    }`}
                                             >
                                                 <div className="flex items-center gap-2 min-w-0 flex-1">
                                                     <div className="w-8 h-8 rounded-md bg-surface-1 overflow-hidden shrink-0 flex items-center justify-center border border-border-subtle/40">
@@ -986,11 +1099,10 @@ export function MultimediaTab({
                     <button
                         type="button"
                         onClick={() => setMediaFilter("all")}
-                        className={`px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${
-                            mediaFilter === "all"
-                                ? "bg-accent text-white shadow-xs"
-                                : "text-secondary hover:text-primary hover:bg-surface-2"
-                        }`}
+                        className={`px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${mediaFilter === "all"
+                            ? "bg-accent text-white shadow-xs"
+                            : "text-secondary hover:text-primary hover:bg-surface-2"
+                            }`}
                     >
                         All Media ({allMediaItems.length})
                     </button>
@@ -998,11 +1110,10 @@ export function MultimediaTab({
                     <button
                         type="button"
                         onClick={() => setMediaFilter("videos")}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${
-                            mediaFilter === "videos"
-                                ? "bg-accent text-white shadow-xs"
-                                : "text-secondary hover:text-primary hover:bg-surface-2"
-                        }`}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${mediaFilter === "videos"
+                            ? "bg-accent text-white shadow-xs"
+                            : "text-secondary hover:text-primary hover:bg-surface-2"
+                            }`}
                     >
                         <Film size={13} />
                         <span>Videos ({videoCount})</span>
@@ -1011,11 +1122,10 @@ export function MultimediaTab({
                     <button
                         type="button"
                         onClick={() => setMediaFilter("audios")}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${
-                            mediaFilter === "audios"
-                                ? "bg-accent text-white shadow-xs"
-                                : "text-secondary hover:text-primary hover:bg-surface-2"
-                        }`}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-caption font-bold transition-all cursor-pointer ${mediaFilter === "audios"
+                            ? "bg-accent text-white shadow-xs"
+                            : "text-secondary hover:text-primary hover:bg-surface-2"
+                            }`}
                     >
                         <Music size={13} />
                         <span>Audios ({audioCount})</span>
@@ -1060,11 +1170,10 @@ export function MultimediaTab({
                         <button
                             type="button"
                             onClick={() => setViewMode("grid")}
-                            className={`p-1.5 rounded-md transition-all cursor-pointer ${
-                                viewMode === "grid"
-                                    ? "bg-surface-1 text-primary shadow-2xs"
-                                    : "text-tertiary hover:text-primary"
-                            }`}
+                            className={`p-1.5 rounded-md transition-all cursor-pointer ${viewMode === "grid"
+                                ? "bg-surface-1 text-primary shadow-2xs"
+                                : "text-tertiary hover:text-primary"
+                                }`}
                             title="Gallery / Grid View"
                         >
                             <LayoutGrid size={14} />
@@ -1072,11 +1181,10 @@ export function MultimediaTab({
                         <button
                             type="button"
                             onClick={() => setViewMode("list")}
-                            className={`p-1.5 rounded-md transition-all cursor-pointer ${
-                                viewMode === "list"
-                                    ? "bg-surface-1 text-primary shadow-2xs"
-                                    : "text-tertiary hover:text-primary"
-                            }`}
+                            className={`p-1.5 rounded-md transition-all cursor-pointer ${viewMode === "list"
+                                ? "bg-surface-1 text-primary shadow-2xs"
+                                : "text-tertiary hover:text-primary"
+                                }`}
                             title="List View"
                         >
                             <List size={14} />
@@ -1142,13 +1250,12 @@ export function MultimediaTab({
                         return (
                             <div
                                 key={item.id}
-                                className={`group bg-surface-1 rounded-2xl border transition-all overflow-hidden flex flex-col justify-between shadow-2xs hover:shadow-raised ${
-                                    isCurrentActive
-                                        ? "ring-2 ring-accent border-accent"
-                                        : isSelected
-                                            ? "ring-1 ring-accent border-accent/60"
-                                            : "border-border-subtle hover:border-border-strong"
-                                }`}
+                                className={`group bg-surface-1 rounded-2xl border transition-all overflow-hidden flex flex-col justify-between shadow-2xs hover:shadow-raised ${isCurrentActive
+                                    ? "ring-2 ring-accent border-accent"
+                                    : isSelected
+                                        ? "ring-1 ring-accent border-accent/60"
+                                        : "border-border-subtle hover:border-border-strong"
+                                    }`}
                             >
                                 {/* Thumbnail Container */}
                                 <div
@@ -1271,9 +1378,8 @@ export function MultimediaTab({
                         return (
                             <div
                                 key={item.id}
-                                className={`flex items-center justify-between p-3 border-b border-border-subtle last:border-b-0 hover:bg-surface-2/40 transition-colors ${
-                                    isCurrentActive ? "bg-accent-subtle/20" : ""
-                                }`}
+                                className={`flex items-center justify-between p-3 border-b border-border-subtle last:border-b-0 hover:bg-surface-2/40 transition-colors ${isCurrentActive ? "bg-accent-subtle/20" : ""
+                                    }`}
                             >
                                 <div className="flex items-center gap-3 min-w-0 flex-1">
                                     <input

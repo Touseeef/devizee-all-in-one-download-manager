@@ -532,12 +532,17 @@ fn resolve_output_dir(
 #[tauri::command]
 fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
     // SEC-10: Handle poisoned lock gracefully instead of panicking
-    let mut conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    let mut conn = state
+        .db_conn
+        .lock()
+        .map_err(|_| "Database lock poisoned".to_string())?;
     let records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     let mut fixed = 0usize;
 
     // Edge Case: Wrap in transaction so sudden exit or crash leaves database in consistent state
-    let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     for rec in records {
         let old_path = match &rec.file_path {
@@ -570,7 +575,8 @@ fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
         fixed += 1;
     }
 
-    tx.commit().map_err(|e| format!("Failed to commit transaction: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
     Ok(fixed)
 }
 
@@ -727,6 +733,11 @@ async fn start_download(
             // SEC-7 (defense-in-depth): sanitise expanded template values so that
             // untrusted video titles cannot introduce path separators into filenames.
             "--restrict-filenames",
+            // PERFORMANCE: Move the MP4/MOV moov atom to the front of the file so
+            // players can read metadata instantly instead of seeking to the end
+            // (fixes the 5+ second cold-start delay for local playback).
+            "--postprocessor-args",
+            "Merger:-movflags +faststart",
         ]);
 
         // Priority 9: Stage temp/.part files into separate temp folder if configured
@@ -1289,13 +1300,14 @@ async fn open_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
     // Block executable/script extensions — these have no legitimate reason to be
     // "opened" from the download-history UI; the user should locate them in Explorer.
     const DANGEROUS_EXT: &[&str] = &[
-        "exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "wsf", "com", "scr",
-        "pif", "hta", "reg", "lnk",
+        "exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "wsf", "com", "scr", "pif", "hta", "reg",
+        "lnk",
     ];
     if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
         if DANGEROUS_EXT.contains(&ext.to_lowercase().as_str()) {
             return Err(
-                "Opening executable files is not allowed from Devizee. Use File Explorer.".to_string()
+                "Opening executable files is not allowed from Devizee. Use File Explorer."
+                    .to_string(),
             );
         }
     }
@@ -1653,7 +1665,10 @@ async fn pause_download(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let pid_opt = {
-        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        let mut procs = state
+            .active_processes
+            .lock()
+            .map_err(|_| "Process map lock poisoned")?;
         procs.remove(&task_id)
     };
 
@@ -1702,7 +1717,10 @@ async fn cancel_download(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let pid_opt = {
-        let mut procs = state.active_processes.lock().map_err(|_| "Process map lock poisoned")?;
+        let mut procs = state
+            .active_processes
+            .lock()
+            .map_err(|_| "Process map lock poisoned")?;
         procs.remove(&task_id)
     };
 
@@ -1815,9 +1833,9 @@ async fn read_local_file(path: String, app: tauri::AppHandle) -> Result<Vec<u8>,
         return Err("File not found".to_string());
     }
 
-    let canonical = p.canonicalize().map_err(|e| {
-        format!("Path resolution failed: {}", e)
-    })?;
+    let canonical = p
+        .canonicalize()
+        .map_err(|e| format!("Path resolution failed: {}", e))?;
 
     // Determine the allowed root: system Downloads/Devizee
     let allowed_root = app
@@ -1830,9 +1848,7 @@ async fn read_local_file(path: String, app: tauri::AppHandle) -> Result<Vec<u8>,
     let allowed_canonical = allowed_root.canonicalize().unwrap_or(allowed_root);
 
     if !canonical.starts_with(&allowed_canonical) {
-        return Err(
-            "Access denied: file is outside the Devizee download directory".to_string()
-        );
+        return Err("Access denied: file is outside the Devizee download directory".to_string());
     }
 
     std::fs::read(&canonical).map_err(|e| format!("read_local_file failed: {}", e))
@@ -1841,7 +1857,10 @@ async fn read_local_file(path: String, app: tauri::AppHandle) -> Result<Vec<u8>,
 #[tauri::command]
 fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>, String> {
     // SEC-10: Handle poisoned lock gracefully
-    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    let conn = state
+        .db_conn
+        .lock()
+        .map_err(|_| "Database lock poisoned".to_string())?;
 
     let mut records = db::get_all_downloads(&conn).map_err(|e| e.to_string())?;
     for record in &mut records {
@@ -1871,7 +1890,10 @@ fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::DownloadRecord>,
 #[tauri::command]
 fn hide_history_item(id: String, state: tauri::State<AppState>) -> Result<(), String> {
     // SEC-10: Handle poisoned lock gracefully
-    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    let conn = state
+        .db_conn
+        .lock()
+        .map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -1900,13 +1922,16 @@ fn delete_history_file(
 
         if !canonical.starts_with(&allowed_canonical) {
             return Err(
-                "Access denied: file is outside the Devizee download directory".to_string()
+                "Access denied: file is outside the Devizee download directory".to_string(),
             );
         }
 
         let _ = std::fs::remove_file(&canonical);
     }
-    let conn = state.db_conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+    let conn = state
+        .db_conn
+        .lock()
+        .map_err(|_| "Database lock poisoned".to_string())?;
     db::hide_download(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -1967,7 +1992,9 @@ pub fn run() {
             let conn = db::init_db(app.handle()).expect("Failed to initialize database");
             app.manage(AppState {
                 db_conn: std::sync::Mutex::new(conn),
-                active_processes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                active_processes: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
             });
 
             // System tray icon + menu
