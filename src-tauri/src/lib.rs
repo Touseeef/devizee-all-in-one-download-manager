@@ -616,6 +616,86 @@ fn resolve_output_dir(
     }
 }
 
+// ─── W3-5: Orphan .part / .ytdl cleanup ───
+// yt-dlp stages downloads as *.part and *.ytdl files. If a download is
+// cancelled or the app crashes, those stay behind. On startup we walk the
+// download root and remove any temp file older than 48 hours. Files newer
+// than 48h are left alone (they may belong to a paused/interrupted task).
+fn cleanup_orphan_part_files(root: &std::path::Path) -> usize {
+    const MAX_AGE_SECS: u64 = 48 * 60 * 60; // 48 hours
+    let mut removed = 0usize;
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(MAX_AGE_SECS))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    fn walk(dir: &std::path::Path, cutoff: std::time::SystemTime, removed: &mut usize) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return, // unreadable dir — skip silently
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                walk(&path, cutoff, removed);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_lowercase());
+            let is_temp = matches!(ext.as_deref(), Some("part") | Some("ytdl") | Some("temp"));
+            if !is_temp {
+                continue;
+            }
+            if let Ok(mtime) = meta.modified() {
+                if mtime < cutoff {
+                    if std::fs::remove_file(&path).is_ok() {
+                        *removed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    walk(root, cutoff, &mut removed);
+    removed
+}
+
+/// Frontend calls this on startup with the current saveFolder path.
+/// Returns the number of orphan files removed (0 if none).
+#[tauri::command]
+async fn cleanup_orphan_parts(root: String) -> Result<usize, String> {
+    let trimmed = root.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() || !path.is_dir() {
+        return Ok(0);
+    }
+    // Run on a blocking task so the async runtime isn't held up by a
+    // potentially large filesystem walk.
+    let owned = path.to_path_buf();
+    let removed = tauri::async_runtime::spawn_blocking(move || cleanup_orphan_part_files(&owned))
+        .await
+        .map_err(|e| format!("Cleanup task failed: {}", e))?;
+
+    if removed > 0 {
+        eprintln!(
+            "[Devizee] Startup cleanup: removed {} orphan .part/.ytdl file(s)",
+            removed
+        );
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 fn fix_legacy_paths(state: tauri::State<AppState>) -> Result<usize, String> {
     // SEC-10: Handle poisoned lock gracefully instead of panicking
@@ -2282,6 +2362,7 @@ pub fn run() {
             fetch_audio_bytes,
             fix_legacy_paths,
             read_local_file,
+            cleanup_orphan_parts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

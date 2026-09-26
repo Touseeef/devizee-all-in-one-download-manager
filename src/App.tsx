@@ -940,6 +940,22 @@ export default function App() {
   useEffect(() => {
     loadHistory();
 
+    // W3-5: fire-and-forget orphan cleanup on startup. Backend removes
+    // any *.part / *.ytdl files older than 48 hours under the current
+    // download root. Silent on success; logs to stdout if anything was
+    // cleaned. Errors here are non-fatal — cleanup is best-effort.
+    (async () => {
+      try {
+        const root = settings.saveFolder || "Downloads/Devizee";
+        const removed = await invoke<number>("cleanup_orphan_parts", { root });
+        if (removed > 0) {
+          console.log(`[Devizee] Startup cleanup removed ${removed} orphan file(s)`);
+        }
+      } catch (err) {
+        console.warn("[Devizee] Orphan cleanup skipped:", err);
+      }
+    })();
+
     const unlisten = listen<any>("download-progress", (event) => {
       const p = event.payload;
 
