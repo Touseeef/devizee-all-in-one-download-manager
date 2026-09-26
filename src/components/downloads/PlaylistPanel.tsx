@@ -294,17 +294,17 @@ export function PlaylistPanel({
                                             >
                                                 {entry.title}
                                             </p>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-caption text-tertiary text-[11px]">
+                                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                <span className="text-caption text-tertiary text-[11px] whitespace-nowrap">
                                                     {entry.duration_string}
                                                 </span>
                                                 {entryTask && (
                                                     <span
-                                                        className={`text-[10px] font-semibold px-1.5 py-0.2 rounded font-mono flex items-center gap-1 ${entryTask.status === "completed"
-                                                            ? "bg-status-success-subtle/30 text-status-success"
-                                                            : entryTask.status === "error"
-                                                                ? "bg-status-danger-subtle/30 text-status-danger"
-                                                                : "bg-accent-subtle text-accent"
+                                                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded font-mono inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${entryTask.status === "completed"
+                                                                ? "bg-status-success-subtle/30 text-status-success"
+                                                                : entryTask.status === "error"
+                                                                    ? "bg-status-danger-subtle/30 text-status-danger"
+                                                                    : "bg-accent-subtle text-accent"
                                                             }`}
                                                     >
                                                         {entryTask.status === "downloading" && (
@@ -313,7 +313,7 @@ export function PlaylistPanel({
                                                         {entryTask.status === "downloading"
                                                             ? `${entryTask.percent.toFixed(0)}%`
                                                             : entryTask.status === "completed"
-                                                                ? "Already Downloaded"
+                                                                ? "✓ Downloaded"
                                                                 : entryTask.status === "error"
                                                                     ? "Failed"
                                                                     : entryTask.status}
@@ -336,7 +336,7 @@ export function PlaylistPanel({
                                                     }
                                                     if (unique.length === 0) return null;
                                                     return (
-                                                        <div className="flex flex-wrap gap-1 mt-1 w-full">
+                                                        <div className="flex flex-wrap gap-1 mt-1">
                                                             {unique.slice(0, 3).map((rec) => {
                                                                 const isAud = rec.format.toLowerCase().match(/mp3|m4a|flac|opus|wav/);
                                                                 const shortFmt = rec.format
