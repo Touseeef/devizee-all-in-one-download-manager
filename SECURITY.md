@@ -8,7 +8,7 @@ server.
 
 If you discover a security issue, please **do not** open a public GitHub
 issue. Instead, report it privately via GitHub's
-[Security Advisory](https://github.com/Touseeef/devizee-all-in-one-download-manager/security/advisories/new)
+[Security Advisory](https://github.com/Touseeef/devizee-lite-universal-video-downloader/security/advisories/new)
 feature, or email **connect.touseeef@gmail.com** with:
 
 - A description of the issue

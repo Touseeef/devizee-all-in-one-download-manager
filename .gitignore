@@ -53,5 +53,9 @@ BATCH_0_DIAGNOSTICS.txt
 src-tauri/gen/
 ROADMAP.md
 implementation_plan.md
+QA_CHECKLIST.md
+project_status_report.md
+AGENTS.md
+.agents/
 .gemini/
 
