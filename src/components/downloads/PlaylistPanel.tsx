@@ -1,10 +1,13 @@
+import { useState } from "react";
 import {
     CheckSquare,
     Download,
     ListPlus,
     Loader2,
+    Music,
     Pause,
     Play,
+    PlayCircle,
     RotateCcw,
     RotateCw,
     Square,
@@ -28,11 +31,6 @@ export function PlaylistPanel({
     toggleItem,
     selectAll,
     deselectAll,
-    batchPreset,
-    setBatchPreset,
-    setBatchFormatId,
-    setBatchExt,
-    setBatchIsAudio,
     onBatchDownload,
     onSingleDownload,
     onPlayVideo,
@@ -57,13 +55,9 @@ export function PlaylistPanel({
     toggleItem: (id: string) => void;
     selectAll: () => void;
     deselectAll: () => void;
-    batchPreset: string;
-    setBatchPreset: (p: string) => void;
-    setBatchFormatId: (id: string) => void;
-    setBatchExt: (ext: string) => void;
-    setBatchIsAudio: (v: boolean) => void;
-    onBatchDownload: () => void;
-    onSingleDownload: (entry: PlaylistEntry, presetLabel: string) => void;
+
+    onBatchDownload: (items: { entry: PlaylistEntry; preset: string }[]) => void;
+    onSingleDownload: (entry: PlaylistEntry, preset: string) => void;
     onPlayVideo: (entry: PlaylistEntry) => void;
     onPreviewAudio: (url: string, id: string) => void;
     previewingId: string | null;
@@ -83,13 +77,43 @@ export function PlaylistPanel({
         return `${m}:${s < 10 ? "0" : ""}${s}`;
     };
 
-    const presetLabel = (preset: string) => {
-        if (preset === "1080p") return "1080p Video";
-        if (preset === "720p") return "720p Video";
-        if (preset === "480p") return "480p Video";
-        if (preset === "mp3") return "MP3 Audio";
-        return "M4A Audio";
+
+    // ─── W2-10: Full preset system ───
+    // Each playlist item resolves to a preset ID. If no per-item override
+    // is set, it falls back to globalVideoPreset (items are videos by default).
+    // Two global dropdowns at the top: video and audio, independent.
+    const ALL_PRESETS: { id: string; label: string; isAudio: boolean }[] = [
+        { id: "4k", label: "4K Video", isAudio: false },
+        { id: "1440p", label: "1440p Video", isAudio: false },
+        { id: "1080p", label: "1080p Video", isAudio: false },
+        { id: "720p", label: "720p Video", isAudio: false },
+        { id: "480p", label: "480p Video", isAudio: false },
+        { id: "360p", label: "360p Video", isAudio: false },
+        { id: "mp3", label: "MP3 (320 kbps)", isAudio: true },
+        { id: "m4a", label: "M4A (AAC)", isAudio: true },
+        { id: "flac", label: "FLAC (Lossless)", isAudio: true },
+        { id: "wav", label: "WAV (Uncompressed)", isAudio: true },
+        { id: "opus", label: "OPUS Audio", isAudio: true },
+    ];
+    const VIDEO_PRESETS = ALL_PRESETS.filter((p) => !p.isAudio);
+    const AUDIO_PRESETS = ALL_PRESETS.filter((p) => p.isAudio);
+
+    const [itemPresetIds, setItemPresetIds] = useState<Map<string, string>>(new Map());
+    const [globalPreset, setGlobalPreset] = useState("1080p");
+
+    const getItemPreset = (entryId: string): string => {
+        const override = itemPresetIds.get(entryId);
+        if (override) return override;
+        return globalPreset;
     };
+
+    // "Authoritative" when every selected row resolves to the global preset.
+    // Otherwise it's Mixed — some row was individually overridden.
+    const selectedArray = Array.from(selectedIds);
+    const globalDropdownActive =
+        selectedArray.length === 0 ||
+        selectedArray.every((id) => getItemPreset(id) === globalPreset);
+    const hasMixedFormats = selectedArray.length > 0 && !globalDropdownActive;
 
     if (!playlistInfo && !isLoadingPlaylist) return null;
 
@@ -151,46 +175,61 @@ export function PlaylistPanel({
                             </button>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            {/* W2-10: SINGLE global preset dropdown (video + audio grouped) */}
+                            <span className="text-caption font-semibold text-tertiary whitespace-nowrap">
+                                {selectedIds.size === 0
+                                    ? "Apply to All:"
+                                    : `Apply to ${selectedIds.size} Selected:`}
+                            </span>
                             <select
-                                value={batchPreset}
+                                value={globalPreset}
                                 onChange={(e) => {
                                     const p = e.target.value;
-                                    setBatchPreset(p);
-                                    if (p === "1080p") {
-                                        setBatchFormatId("bestvideo[height<=1080]+bestaudio/best[height<=1080]");
-                                        setBatchExt("mp4");
-                                        setBatchIsAudio(false);
-                                    } else if (p === "720p") {
-                                        setBatchFormatId("bestvideo[height<=720]+bestaudio/best[height<=720]");
-                                        setBatchExt("mp4");
-                                        setBatchIsAudio(false);
-                                    } else if (p === "480p") {
-                                        setBatchFormatId("bestvideo[height<=480]+bestaudio/best[height<=480]");
-                                        setBatchExt("mp4");
-                                        setBatchIsAudio(false);
-                                    } else if (p === "mp3") {
-                                        setBatchFormatId("bestaudio/best");
-                                        setBatchExt("mp3");
-                                        setBatchIsAudio(true);
-                                    } else if (p === "m4a") {
-                                        setBatchFormatId("bestaudio/best");
-                                        setBatchExt("m4a");
-                                        setBatchIsAudio(true);
-                                    }
+                                    setGlobalPreset(p);
+                                    setItemPresetIds(new Map());
+                                    if (selectedIds.size === 0) selectAll();
                                 }}
-                                className="bg-surface-1 border border-border-subtle text-primary rounded-md px-2.5 py-1 text-caption font-semibold outline-none cursor-pointer"
+                                className={`border rounded-md px-2.5 py-1 text-caption font-semibold outline-none cursor-pointer transition-all ${globalDropdownActive
+                                    ? "bg-accent/15 text-accent border-accent ring-1 ring-accent/40"
+                                    : "bg-surface-1 text-primary border-border-subtle hover:border-accent/40"
+                                    }`}
+                                title="Apply this format to all selected items"
                             >
-                                <option value="1080p">1080p Video (MP4)</option>
-                                <option value="720p">720p Video (MP4)</option>
-                                <option value="480p">480p Video (MP4)</option>
-                                <option value="mp3">Audio (MP3 320k)</option>
-                                <option value="m4a">Audio (M4A)</option>
+                                <optgroup label="── Video ──">
+                                    {VIDEO_PRESETS.map((p) => (
+                                        <option key={p.id} value={p.id}>
+                                            {p.label}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                                <optgroup label="── Audio ──">
+                                    {AUDIO_PRESETS.map((p) => (
+                                        <option key={p.id} value={p.id}>
+                                            {p.label}
+                                        </option>
+                                    ))}
+                                </optgroup>
                             </select>
+
+                            {hasMixedFormats && (
+                                <span className="text-[10px] italic text-tertiary whitespace-nowrap">
+                                    (mixed overrides)
+                                </span>
+                            )}
+
                             <button
                                 type="button"
                                 disabled={selectedIds.size === 0}
-                                onClick={onBatchDownload}
+                                onClick={() => {
+                                    const resolved = selectedArray
+                                        .map((id) => {
+                                            const entry = playlistInfo?.entries.find((e) => e.id === id);
+                                            return entry ? { entry, preset: getItemPreset(id) } : null;
+                                        })
+                                        .filter((x): x is { entry: PlaylistEntry; preset: string } => x !== null);
+                                    onBatchDownload(resolved);
+                                }}
                                 className="px-3.5 py-1 rounded-md bg-accent text-white hover:bg-accent-hover text-caption font-semibold disabled:opacity-40 transition-all shadow-sm flex items-center gap-1.5"
                             >
                                 <Download size={13} />
@@ -274,14 +313,110 @@ export function PlaylistPanel({
                                                         {entryTask.status === "downloading"
                                                             ? `${entryTask.percent.toFixed(0)}%`
                                                             : entryTask.status === "completed"
-                                                                ? "Downloaded"
+                                                                ? "Already Downloaded"
                                                                 : entryTask.status === "error"
                                                                     ? "Failed"
                                                                     : entryTask.status}
                                                     </span>
                                                 )}
+                                                {/* W2-9: show downloaded formats as chips */}
+                                                {entryTask?.status === "completed" && (() => {
+                                                    const allExisting = history.filter(
+                                                        (h) =>
+                                                            (h.url.includes(entry.id) || h.id.startsWith(entry.id)) &&
+                                                            h.status === "completed"
+                                                    );
+                                                    const seen = new Set<string>();
+                                                    const unique: typeof allExisting = [];
+                                                    for (const m of allExisting) {
+                                                        const k = m.format.toLowerCase().trim();
+                                                        if (seen.has(k)) continue;
+                                                        seen.add(k);
+                                                        unique.push(m);
+                                                    }
+                                                    if (unique.length === 0) return null;
+                                                    return (
+                                                        <div className="flex flex-wrap gap-1 mt-1 w-full">
+                                                            {unique.slice(0, 3).map((rec) => {
+                                                                const isAud = rec.format.toLowerCase().match(/mp3|m4a|flac|opus|wav/);
+                                                                const shortFmt = rec.format
+                                                                    .replace(/\s*\(.*?\)\s*/g, "")
+                                                                    .replace(/\[.*?\]/g, "")
+                                                                    .trim()
+                                                                    .slice(0, 20);
+                                                                return (
+                                                                    <button
+                                                                        key={rec.id}
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            const target = e.currentTarget;
+                                                                            const path = rec.file_path;
+                                                                            const t = window.setTimeout(() => {
+                                                                                (window as any).__onReveal?.(path);
+                                                                            }, 250);
+                                                                            (target as any).__pendingClickTimer = t;
+                                                                        }}
+                                                                        onDoubleClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            const target = e.currentTarget;
+                                                                            const pending = (target as any).__pendingClickTimer;
+                                                                            if (pending) {
+                                                                                clearTimeout(pending);
+                                                                                delete (target as any).__pendingClickTimer;
+                                                                            }
+                                                                            (window as any).__onOpenFile?.(rec.file_path);
+                                                                        }}
+                                                                        className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-status-success-subtle/30 hover:bg-status-success-subtle/60 border border-status-success/30 text-[10px] font-mono cursor-pointer transition-colors"
+                                                                        title={`${rec.file_path || ""}\n\nClick to reveal · Double-click to open`}
+                                                                    >
+                                                                        {isAud ? <Music size={9} className="text-accent" /> : <PlayCircle size={9} className="text-accent" />}
+                                                                        <span className="text-status-success font-semibold">{shortFmt || rec.format}</span>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                            {unique.length > 3 && (
+                                                                <span className="text-[10px] text-tertiary font-mono px-1">
+                                                                    +{unique.length - 3}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
+
+                                        {/* W2-10: Per-item format dropdown — full preset list */}
+                                        <select
+                                            value={getItemPreset(entry.id)}
+                                            onChange={(e) => {
+                                                const p = e.target.value;
+                                                setItemPresetIds((prev) => {
+                                                    const next = new Map(prev);
+                                                    next.set(entry.id, p);
+                                                    return next;
+                                                });
+                                                if (!isSelected) toggleItem(entry.id);
+                                            }}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="px-1.5 py-1 rounded-md bg-surface-2 border border-border-subtle text-caption font-semibold text-primary outline-none cursor-pointer hover:border-accent/40 transition-colors shrink-0 max-w-[110px]"
+                                            title="Choose format for this item"
+                                        >
+                                            <optgroup label="── Video ──">
+                                                {VIDEO_PRESETS.map((o) => (
+                                                    <option key={o.id} value={o.id}>
+                                                        {o.label}
+                                                    </option>
+                                                ))}
+                                            </optgroup>
+                                            <optgroup label="── Audio ──">
+                                                {AUDIO_PRESETS.map((o) => (
+                                                    <option key={o.id} value={o.id}>
+                                                        {o.label}
+                                                    </option>
+                                                ))}
+                                            </optgroup>
+                                        </select>
 
                                         <button
                                             type="button"
@@ -290,9 +425,13 @@ export function PlaylistPanel({
                                                 entryTask?.status === "starting" ||
                                                 entryTask?.status === "muxing"
                                             }
-                                            onClick={() => onSingleDownload(entry, presetLabel(batchPreset))}
+                                            onClick={() => {
+                                                const effectivePreset = getItemPreset(entry.id);
+                                                if (isSelected) toggleItem(entry.id);
+                                                onSingleDownload(entry, effectivePreset);
+                                            }}
                                             className="w-7 h-7 rounded-md bg-surface-2 hover:bg-surface-3 text-secondary hover:text-accent flex items-center justify-center shrink-0 transition-colors border border-border-subtle shadow-sm disabled:opacity-40"
-                                            title="Download this track directly"
+                                            title="Download this track in its own format"
                                         >
                                             <Download size={12} />
                                         </button>

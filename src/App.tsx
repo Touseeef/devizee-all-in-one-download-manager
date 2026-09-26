@@ -249,6 +249,12 @@ export default function App() {
       console.error("Device enumeration error:", e);
     }
   };
+  // W2-9: expose folder/file openers globally so PlaylistPanel chips can
+  // trigger the same behavior without prop drilling.
+  useEffect(() => {
+    (window as any).__onReveal = openFolder;
+    (window as any).__onOpenFile = openFile;
+  }, []);
 
   useEffect(() => {
     refreshAudioDevices();
@@ -1002,10 +1008,32 @@ export default function App() {
         }
 
         const newHistory = [...prev];
+        const prevPercent = newHistory[idx].percent || 0;
+        const incoming = p.percent || 0;
+
+        // ─── F-XX: Monotonic progress clamp for multi-stream downloads ───
+        // HD downloads use DASH (separate video + audio streams). Each
+        // stream emits 0% → 100% individually, so the raw stream percent
+        // resets between streams. We clamp the displayed percent to never
+        // regress while downloading, capped at 99% so the bar only hits
+        // 100% when the file is truly finalized.
+        let displayedPercent: number;
+        if (p.status === "completed") {
+          displayedPercent = 100;
+        } else if (p.status === "downloading") {
+          displayedPercent = Math.min(99, Math.max(prevPercent, incoming));
+        } else if (p.status === "muxing" || p.status === "verifying") {
+          // Hold the bar at the last high value during finalize/verify
+          displayedPercent = Math.min(99, prevPercent);
+        } else {
+          // error / cancelled / interrupted — hold at last value
+          displayedPercent = prevPercent;
+        }
+
         newHistory[idx] = {
           ...newHistory[idx],
           status: p.status,
-          percent: p.percent,
+          percent: displayedPercent,
           speed: p.speed,
           eta: p.eta,
           file_path: p.file_path || newHistory[idx].file_path,
@@ -1475,6 +1503,44 @@ export default function App() {
   const handleImportTxtLines = async (lines: string[]) => {
     if (lines.length === 0) return;
 
+    // ─── Bug A: Deduplicate against existing queue and within the import ───
+    // Playlists and "RD…" mixes often contain the same video multiple times.
+    // Users may also re-import the same .txt. We canonicalize URLs and drop
+    // any that already exist in the batch queue.
+    const normalizeUrl = (u: string): string => {
+      try {
+        const parsed = new URL(u);
+        // Canonicalize YouTube watch URLs (strip list/index/start_radio/t)
+        const v = parsed.searchParams.get("v");
+        if (v) return `https://www.youtube.com/watch?v=${v}`;
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return u.trim();
+      }
+    };
+
+    const existingUrls = new Set(
+      batchQueueItems.map((b) => normalizeUrl(b.url))
+    );
+
+    const seenInImport = new Set<string>();
+    const uniqueLines: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const norm = normalizeUrl(trimmed);
+      if (existingUrls.has(norm)) continue;
+      if (seenInImport.has(norm)) continue;
+      seenInImport.add(norm);
+      uniqueLines.push(trimmed);
+    }
+
+    if (uniqueLines.length === 0) {
+      // Everything was already queued. Nothing to add.
+      setActiveTab("dashboard");
+      return;
+    }
+
     const defaultFmt: FormatOption = {
       format_id: "bestvideo[height<=1080]+bestaudio/best",
       label: "1080p (Full HD)",
@@ -1484,7 +1550,7 @@ export default function App() {
       filesize_approx: null,
     };
 
-    const newItems: BatchItem[] = lines.map((line, idx) => {
+    const newItems: BatchItem[] = uniqueLines.map((line, idx) => {
       let hostname = "Web";
       try {
         hostname = new URL(line).hostname.replace(/^www\./, "");
@@ -1497,6 +1563,7 @@ export default function App() {
         thumbnail: "",
         site: hostname,
         format: defaultFmt,
+        metadataError: false,
       };
     });
 
@@ -1516,12 +1583,20 @@ export default function App() {
                 thumbnail: info.thumbnail || b.thumbnail,
                 duration_string: info.duration_string,
                 site: info.uploader || b.site,
+                metadataError: false,
               }
               : b
           )
         );
       } catch (err) {
         console.warn("Failed fetching batch item metadata:", item.url, err);
+        // ─── Bug B: Mark item so UI renders an error badge instead of
+        // a silent black thumbnail ───
+        setBatchQueueItems((prev) =>
+          prev.map((b) =>
+            b.id === item.id ? { ...b, metadataError: true } : b
+          )
+        );
       }
     }
   };
@@ -1574,16 +1649,44 @@ export default function App() {
       ? `${baseDisplayFormat} [Clip ${trimStart}-${trimEnd}]`
       : baseDisplayFormat;
 
-    // 3. Duplicate check logic
+    // 3. Duplicate check logic (W2-8: capture the record for the enhanced dialog)
     if (!duplicateAction) {
-      const isDup = history.some(
+      const existing = history.find(
         (h) =>
           h.url === info.url &&
           h.status === "completed" &&
           h.format.toLowerCase().includes(ext.toLowerCase())
       );
-      if (isDup) {
-        setDuplicateDialog({ isOpen: true, formatId, ext, isAudio, specificInfo, formatLabel });
+      if (existing) {
+        // Try to compute an estimated size for the new download from
+        // format metadata (yt-dlp provides filesize_approx when available)
+        let newEstimatedSize: number | null = null;
+        if (info.video_formats) {
+          const m = info.video_formats.find((f: any) => f.format_id === formatId);
+          if (m?.filesize_approx) newEstimatedSize = m.filesize_approx;
+        }
+        if (!newEstimatedSize && info.audio_formats) {
+          const m = info.audio_formats.find((f: any) => f.format_id === formatId);
+          if (m?.filesize_approx) newEstimatedSize = m.filesize_approx;
+        }
+
+        setDuplicateDialog({
+          isOpen: true,
+          formatId,
+          ext,
+          isAudio,
+          specificInfo,
+          formatLabel,
+          existingRecord: {
+            title: existing.title,
+            format: existing.format,
+            file_size: existing.file_size,
+            file_path: existing.file_path,
+            date_added: existing.date_added,
+          },
+          newEstimatedSize,
+          newLabel: baseDisplayFormat,
+        });
         return;
       }
     }
@@ -1728,38 +1831,41 @@ export default function App() {
     handleRetryDownloadRef.current = handleRetryDownload;
   }, [handleRetryDownload]);
 
-  const handleBatchDownload = async (formatId?: string, ext?: string, isAudio?: boolean) => {
-    if (!playlistInfo) return;
-    const entries = playlistInfo.entries.filter((e) => selectedPlaylistItems.has(e.id));
-    if (entries.length === 0) return;
+  // W2-10: Single source of truth for preset → yt-dlp format mapping
+  const presetToFormat = (presetId: string): { formatId: string; ext: string; isAudio: boolean; label: string } => {
+    const map: Record<string, { formatId: string; ext: string; isAudio: boolean; label: string }> = {
+      "4k": { formatId: "bestvideo[height<=2160]+bestaudio/best[height<=2160]", ext: "mp4", isAudio: false, label: "4K Video (MP4)" },
+      "1440p": { formatId: "bestvideo[height<=1440]+bestaudio/best[height<=1440]", ext: "mp4", isAudio: false, label: "1440p Video (MP4)" },
+      "1080p": { formatId: "bestvideo[height<=1080]+bestaudio/best[height<=1080]", ext: "mp4", isAudio: false, label: "1080p Video (MP4)" },
+      "720p": { formatId: "bestvideo[height<=720]+bestaudio/best[height<=720]", ext: "mp4", isAudio: false, label: "720p Video (MP4)" },
+      "480p": { formatId: "bestvideo[height<=480]+bestaudio/best[height<=480]", ext: "mp4", isAudio: false, label: "480p Video (MP4)" },
+      "360p": { formatId: "bestvideo[height<=360]+bestaudio/best[height<=360]", ext: "mp4", isAudio: false, label: "360p Video (MP4)" },
+      "mp3": { formatId: "bestaudio/best", ext: "mp3", isAudio: true, label: "MP3 Audio (320 kbps)" },
+      "m4a": { formatId: "bestaudio/best", ext: "m4a", isAudio: true, label: "M4A Audio (AAC)" },
+      "flac": { formatId: "bestaudio/best", ext: "flac", isAudio: true, label: "FLAC Audio (Lossless)" },
+      "wav": { formatId: "bestaudio/best", ext: "wav", isAudio: true, label: "WAV Audio (Uncompressed)" },
+      "opus": { formatId: "bestaudio/best", ext: "opus", isAudio: true, label: "OPUS Audio" },
+    };
+    return map[presetId] || map["1080p"];
+  };
 
-    const useFmtId = formatId || batchFormatId;
-    const useExt = ext || batchExt;
-    const useIsAudio = isAudio !== undefined ? isAudio : batchIsAudio;
 
-    // Build human-readable format label
-    const resolvedLabel = useIsAudio
-      ? `Audio (${useExt.toUpperCase()})`
-      : useFmtId.includes("1080")
-        ? `1080p Video`
-        : useFmtId.includes("720")
-          ? `720p Video`
-          : useFmtId.includes("4k") || useFmtId.includes("2160")
-            ? `4K Video`
-            : `${useExt.toUpperCase()} Video`;
+  // W2-10: Accept a resolved list of {entry, preset} from PlaylistPanel.
+  const handleBatchDownload = async (items: { entry: PlaylistEntry; preset: string }[]) => {
+    if (!playlistInfo || !items || items.length === 0) return;
 
-    const taskIds = entries.map((e) => e.id);
+    const taskIds = items.map((t) => t.entry.id);
     setActivePlaylistBatch({
       title: playlistInfo.title,
       taskIds,
-      formatLabel: resolvedLabel,
+      formatLabel: items.length === 1 ? presetToFormat(items[0].preset).label : `${items.length} items`,
     });
 
-    for (const entry of entries) {
-      await handleStartDownload(useFmtId, useExt, useIsAudio, entry, resolvedLabel);
+    for (const { entry, preset } of items) {
+      const f = presetToFormat(preset);
+      await handleStartDownload(f.formatId, f.ext, f.isAudio, entry, f.label);
     }
   };
-
   const handleRemoveHistory = async (id: string) => {
     await invoke("hide_history_item", { id });
     loadHistory();
@@ -2111,6 +2217,30 @@ export default function App() {
               onDismissProgress={() => setActiveCardTaskId(null)}
               t={t}
               isAnalyzing={isFetching}
+              existingDownloads={
+                videoInfo
+                  ? (() => {
+                    // W2-9 fix: dedupe by normalized format so repeated
+                    // downloads of the same format collapse into one chip.
+                    const matches = history.filter(
+                      (h) =>
+                        h.url === videoInfo.url &&
+                        h.status === "completed"
+                    );
+                    const seen = new Set<string>();
+                    const unique: typeof matches = [];
+                    for (const m of matches) {
+                      const key = m.format.toLowerCase().trim();
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      unique.push(m);
+                    }
+                    return unique;
+                  })()
+                  : []
+              }
+              onRevealInFolder={openFolder}
+              onOpenExistingFile={openFile}
               vm={{
                 activeVideoPlaying,
                 isVideoLoading,
@@ -2223,10 +2353,11 @@ export default function App() {
               setBatchFormatId={setBatchFormatId}
               setBatchExt={setBatchExt}
               setBatchIsAudio={setBatchIsAudio}
-              onBatchDownload={() => handleBatchDownload()}
-              onSingleDownload={(entry, presetLabel) =>
-                handleStartDownload(batchFormatId, batchExt, batchIsAudio, entry, presetLabel)
-              }
+              onBatchDownload={(items) => handleBatchDownload(items)}
+              onSingleDownload={(entry, preset) => {
+                const f = presetToFormat(preset);
+                handleStartDownload(f.formatId, f.ext, f.isAudio, entry, f.label);
+              }}
               onPlayVideo={handlePlayVideo}
               onPreviewAudio={toggleAudioPreview}
               previewingId={previewingId}

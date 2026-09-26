@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { RefObject } from "react";
-import { Download, Film, Layers, Loader2, Music, Pause, Play, RotateCcw, RotateCw, Trash2, Volume2 } from "lucide-react";
+import { AlertCircle, Download, Film, Layers, Loader2, Music, Pause, Play, RefreshCw, RotateCcw, RotateCw, Trash2, Volume2 } from "lucide-react";
 import type { FormatOption } from "../../types";
 import { WaveformVisualizer } from "../common/WaveformVisualizer";
 
@@ -13,6 +13,8 @@ export type BatchItem = {
     format: FormatOption;
     duration_string?: string;
     estimatedSize?: string;
+    /** Bug B: set to true when fetch_video_info fails for this item */
+    metadataError?: boolean;
 };
 
 export const PRIMARY_BATCH_PRESETS: { id: string; label: string; format: FormatOption; isAudio: boolean }[] = [
@@ -220,11 +222,10 @@ export function BatchQueuePanel({
                             key={preset.id}
                             type="button"
                             onClick={() => handleApplyGlobalPreset(preset.id)}
-                            className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-all border cursor-pointer ${
-                                isSelected
+                            className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-all border cursor-pointer ${isSelected
                                     ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
                                     : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
-                            }`}
+                                }`}
                             title={`Set all items to ${preset.label}`}
                         >
                             <Icon size={12} />
@@ -237,11 +238,10 @@ export function BatchQueuePanel({
                 <select
                     value={isDropdownSelected ? selectedGlobalPreset : ""}
                     onChange={(e) => handleApplyGlobalPreset(e.target.value)}
-                    className={`px-3 py-1.5 rounded-lg text-caption font-semibold border outline-none cursor-pointer transition-all ${
-                        isDropdownSelected
+                    className={`px-3 py-1.5 rounded-lg text-caption font-semibold border outline-none cursor-pointer transition-all ${isDropdownSelected
                             ? "bg-accent text-white border-accent shadow-xs ring-1 ring-accent"
                             : "bg-surface-1 text-secondary hover:text-primary border-border-subtle hover:bg-surface-2"
-                    }`}
+                        }`}
                     title="Select more video and audio formats"
                 >
                     <option value="" disabled className="bg-surface-1 text-secondary">
@@ -272,9 +272,8 @@ export function BatchQueuePanel({
                     return (
                         <div
                             key={item.id}
-                            className={`flex flex-col p-3 rounded-xl bg-surface-2/40 hover:bg-surface-2 border transition-all ${
-                                isThisPreviewing ? "border-accent/60 ring-1 ring-accent/30 shadow-xs" : "border-border-subtle"
-                            }`}
+                            className={`flex flex-col p-3 rounded-xl bg-surface-2/40 hover:bg-surface-2 border transition-all ${isThisPreviewing ? "border-accent/60 ring-1 ring-accent/30 shadow-xs" : "border-border-subtle"
+                                }`}
                         >
                             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5">
                                 {/* Left: Thumbnail & Index */}
@@ -284,24 +283,42 @@ export function BatchQueuePanel({
                                     </span>
                                     <div
                                         onClick={() => onPlayVideo?.(item)}
-                                        className="w-24 sm:w-28 aspect-video rounded-lg overflow-hidden bg-black shrink-0 relative border border-border-subtle shadow-xs cursor-pointer group/thumb"
-                                        title="Click to play in hero video player"
+                                        className={`w-24 sm:w-28 aspect-video rounded-lg overflow-hidden shrink-0 relative border shadow-xs cursor-pointer group/thumb ${item.metadataError
+                                                ? "bg-status-danger-subtle/30 border-status-danger/40"
+                                                : "bg-black border-border-subtle"
+                                            }`}
+                                        title={
+                                            item.metadataError
+                                                ? "Metadata could not be fetched. The download may still work."
+                                                : "Click to play in hero video player"
+                                        }
                                     >
-                                        <img
-                                            src={item.thumbnail}
-                                            alt=""
-                                            className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
-                                            onError={(e) => {
-                                                e.currentTarget.style.display = "none";
-                                            }}
-                                        />
-                                        <div className="absolute inset-0 bg-black/35 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition-opacity">
-                                            <Play size={16} fill="white" className="text-white ml-0.5" />
-                                        </div>
-                                        {item.duration_string && (
-                                            <span className="absolute bottom-1 right-1 bg-black/80 text-white font-mono text-[9px] px-1 py-0.2 rounded">
-                                                {item.duration_string}
-                                            </span>
+                                        {item.metadataError ? (
+                                            <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-status-danger">
+                                                <AlertCircle size={20} />
+                                                <span className="text-[9px] font-bold uppercase tracking-wider">
+                                                    Metadata failed
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <img
+                                                    src={item.thumbnail}
+                                                    alt=""
+                                                    className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
+                                                    onError={(e) => {
+                                                        e.currentTarget.style.display = "none";
+                                                    }}
+                                                />
+                                                <div className="absolute inset-0 bg-black/35 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition-opacity">
+                                                    <Play size={16} fill="white" className="text-white ml-0.5" />
+                                                </div>
+                                                {item.duration_string && (
+                                                    <span className="absolute bottom-1 right-1 bg-black/80 text-white font-mono text-[9px] px-1 py-0.2 rounded">
+                                                        {item.duration_string}
+                                                    </span>
+                                                )}
+                                            </>
                                         )}
                                     </div>
 
@@ -317,9 +334,15 @@ export function BatchQueuePanel({
                                         <div className="flex items-center gap-2 mt-0.5 text-[11px] text-secondary">
                                             <span className="font-semibold text-accent">{item.site}</span>
                                             <span>•</span>
-                                            <span className="font-mono text-tertiary truncate">
-                                                {item.estimatedSize || "Standard stream"}
-                                            </span>
+                                            {item.metadataError ? (
+                                                <span className="font-mono text-status-danger truncate">
+                                                    Title unavailable — will resolve on download
+                                                </span>
+                                            ) : (
+                                                <span className="font-mono text-tertiary truncate">
+                                                    {item.estimatedSize || "Standard stream"}
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -330,11 +353,10 @@ export function BatchQueuePanel({
                                         <button
                                             type="button"
                                             onClick={() => onPreviewAudio(item.url, item.id)}
-                                            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer border shadow-2xs ${
-                                                isThisPreviewing && isAudioElementPlaying
+                                            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer border shadow-2xs ${isThisPreviewing && isAudioElementPlaying
                                                     ? "bg-accent text-white border-accent"
                                                     : "bg-surface-1 hover:bg-surface-2 text-accent border-border-subtle"
-                                            }`}
+                                                }`}
                                             title="Listen audio preview"
                                         >
                                             {isLoadingAudioId === item.id ? (

@@ -2,8 +2,10 @@ import { useState, useRef } from "react";
 import type { RefObject } from "react";
 import {
     Calendar,
+    CheckCircle2,
     Clock,
     Download,
+    Film,
     Folder,
     Loader2,
     Maximize2,
@@ -19,6 +21,7 @@ import {
     X,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { formatFileSize } from "../../lib/format";
 import { WaveformVisualizer } from "../common/WaveformVisualizer";
 import type { DownloadRecord, FormatOption, VideoInfo } from "../../types";
 import type { TranslationKey } from "../../lib/i18n";
@@ -94,6 +97,9 @@ export function VideoCard({
     t: _t,
     vm,
     isAnalyzing = false,
+    existingDownloads = [],
+    onRevealInFolder,
+    onOpenExistingFile,
 }: {
     videoInfo: VideoInfo;
     settings: any;
@@ -104,6 +110,12 @@ export function VideoCard({
     t: (key: TranslationKey) => string;
     vm: VideoManagerApi;
     isAnalyzing?: boolean;
+    /** W2-9: completed downloads already in the library for this URL */
+    existingDownloads?: DownloadRecord[];
+    /** W2-9: single-click handler for library chips — reveal in Explorer */
+    onRevealInFolder?: (path: string | null) => void;
+    /** W2-9: double-click handler for library chips — open in default player */
+    onOpenExistingFile?: (path: string | null) => void;
 }) {
     const {
         activeVideoPlaying,
@@ -377,11 +389,10 @@ export function VideoCard({
                                 <button
                                     type="button"
                                     onClick={() => toggleAudioPreview(videoInfo.url, videoInfo.id)}
-                                    className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer border ${
-                                        isAudioPreviewing
-                                            ? "bg-accent text-white border-accent ring-1 ring-accent"
-                                            : "bg-surface-2 hover:bg-surface-3 text-primary border-border-subtle hover:border-accent/40"
-                                    }`}
+                                    className={`px-3 py-1.5 rounded-lg text-caption font-semibold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer border ${isAudioPreviewing
+                                        ? "bg-accent text-white border-accent ring-1 ring-accent"
+                                        : "bg-surface-2 hover:bg-surface-3 text-primary border-border-subtle hover:border-accent/40"
+                                        }`}
                                     title="Stream lightweight audio only to check contents and save network bandwidth"
                                 >
                                     {isAudioPreviewing ? (
@@ -535,11 +546,10 @@ export function VideoCard({
                                                 key={f.format_id + f.label}
                                                 type="button"
                                                 onClick={() => setSelectedFormat(f)}
-                                                className={`px-3 py-1.5 rounded-lg text-caption font-semibold transition-all border cursor-pointer ${
-                                                    isSelected
-                                                        ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold shadow-xs"
-                                                        : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-3"
-                                                }`}
+                                                className={`px-3 py-1.5 rounded-lg text-caption font-semibold transition-all border cursor-pointer ${isSelected
+                                                    ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold shadow-xs"
+                                                    : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-3"
+                                                    }`}
                                                 title={`Download video in ${f.label}`}
                                             >
                                                 {f.label}
@@ -557,11 +567,10 @@ export function VideoCard({
                                                     const f = videoInfo.video_formats?.find(x => x.format_id === e.target.value);
                                                     if (f) setSelectedFormat(f);
                                                 }}
-                                                className={`px-2.5 py-1.5 rounded-lg text-caption font-medium outline-none cursor-pointer border ${
-                                                    isDropdownSelected
-                                                        ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold"
-                                                        : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40"
-                                                }`}
+                                                className={`px-2.5 py-1.5 rounded-lg text-caption font-medium outline-none cursor-pointer border ${isDropdownSelected
+                                                    ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold"
+                                                    : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40"
+                                                    }`}
                                                 title="Select more video resolutions"
                                             >
                                                 <option value="" disabled>More Resolutions...</option>
@@ -616,11 +625,10 @@ export function VideoCard({
                                             key={f.format_id + f.label + f.ext}
                                             type="button"
                                             onClick={() => setSelectedFormat(f)}
-                                            className={`px-3 py-1.5 rounded-lg text-caption font-semibold transition-all border cursor-pointer ${
-                                                isSelected
-                                                    ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold shadow-xs"
-                                                    : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-3"
-                                            }`}
+                                            className={`px-3 py-1.5 rounded-lg text-caption font-semibold transition-all border cursor-pointer ${isSelected
+                                                ? "bg-accent/15 text-accent border-accent ring-2 ring-accent/40 font-bold shadow-xs"
+                                                : "bg-surface-2 text-primary border-border-subtle hover:border-accent/40 hover:bg-surface-3"
+                                                }`}
                                             title={`Extract audio stream as ${f.label}`}
                                         >
                                             🎵 {f.label}
@@ -631,6 +639,87 @@ export function VideoCard({
                         </div>
                     </div>
 
+                    {/* W2-9: Already in Library row */}
+                    {existingDownloads.length > 0 && (
+                        <div className="p-2.5 rounded-xl bg-status-success-subtle/30 border border-status-success/30 space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                                <CheckCircle2 size={12} className="text-status-success" />
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-status-success">
+                                    Already in library
+                                </span>
+                                <span className="text-[10px] text-tertiary">
+                                    · {existingDownloads.length} {existingDownloads.length === 1 ? "copy" : "copies"}
+                                </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                                {existingDownloads.map((rec) => {
+                                    const isAudio = rec.format.toLowerCase().includes("mp3")
+                                        || rec.format.toLowerCase().includes("m4a")
+                                        || rec.format.toLowerCase().includes("flac")
+                                        || rec.format.toLowerCase().includes("opus")
+                                        || rec.format.toLowerCase().includes("wav");
+                                    const shortFormat = rec.format
+                                        .replace(/\s*\(.*?\)\s*/g, "")
+                                        .replace(/\[.*?\]/g, "")
+                                        .trim()
+                                        .slice(0, 24);
+                                    const sizeLabel = rec.file_size
+                                        ? formatFileSize(rec.file_size)
+                                        : "size unknown";
+                                    const dateLabel = rec.date_added
+                                        ? new Date(rec.date_added * 1000).toLocaleDateString(undefined, {
+                                            month: "short",
+                                            day: "numeric",
+                                        })
+                                        : "—";
+                                    return (
+                                        <button
+                                            key={rec.id}
+                                            type="button"
+                                            onClick={(e) => {
+                                                // Defer single-click 250ms so a double-click can cancel it
+                                                const target = e.currentTarget;
+                                                const path = rec.file_path;
+                                                const timer = window.setTimeout(() => {
+                                                    onRevealInFolder?.(path);
+                                                    delete (target as any).__pendingClickTimer;
+                                                }, 250);
+                                                (target as any).__pendingClickTimer = timer;
+                                            }}
+                                            onDoubleClick={(e) => {
+                                                const target = e.currentTarget;
+                                                const pending = (target as any).__pendingClickTimer;
+                                                if (pending) {
+                                                    clearTimeout(pending);
+                                                    delete (target as any).__pendingClickTimer;
+                                                }
+                                                onOpenExistingFile?.(rec.file_path);
+                                            }}
+                                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-1 hover:bg-surface-2 border border-status-success/30 hover:border-status-success/60 text-caption transition-colors cursor-pointer shadow-2xs group/chip"
+                                            title={`${rec.file_path || "path unknown"}\n\nClick to reveal in Explorer · Double-click to open`}
+                                        >
+                                            {isAudio ? (
+                                                <Music size={11} className="text-accent shrink-0" />
+                                            ) : (
+                                                <Film size={11} className="text-accent shrink-0" />
+                                            )}
+                                            <span className="font-semibold text-primary">
+                                                {shortFormat || rec.format}
+                                            </span>
+                                            <span className="text-tertiary">·</span>
+                                            <span className="font-mono text-[10px] text-tertiary">
+                                                {sizeLabel}
+                                            </span>
+                                            <span className="text-tertiary">·</span>
+                                            <span className="font-mono text-[10px] text-tertiary">
+                                                {dateLabel}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                     {/* Row 3: Destination Folder Selector & Clip Trimmer Button */}
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center pt-1">
                         {/* Destination Folder */}
@@ -665,11 +754,10 @@ export function VideoCard({
                                         setTrimEnd(videoInfo.duration_string);
                                     }
                                 }}
-                                className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-caption font-bold transition-all cursor-pointer shadow-2xs ${
-                                    isTrimming
-                                        ? "bg-accent text-white border-accent shadow-xs"
-                                        : "bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary border-border-subtle"
-                                }`}
+                                className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-caption font-bold transition-all cursor-pointer shadow-2xs ${isTrimming
+                                    ? "bg-accent text-white border-accent shadow-xs"
+                                    : "bg-surface-2 hover:bg-surface-3 text-secondary hover:text-primary border-border-subtle"
+                                    }`}
                                 title="Trim video segment before downloading without fetching full video"
                             >
                                 <Scissors size={14} />
@@ -790,11 +878,10 @@ export function VideoCard({
                             type="button"
                             onClick={() => setIsScheduleOpen(true)}
                             disabled={isStartingDownload}
-                            className={`px-3.5 py-3 rounded-xl border transition-all cursor-pointer shadow-2xs shrink-0 flex items-center justify-center ${
-                                activeScheduleTime
-                                    ? "bg-accent text-white border-accent"
-                                    : "bg-surface-2 hover:bg-surface-3 border-border-subtle text-secondary hover:text-accent"
-                            }`}
+                            className={`px-3.5 py-3 rounded-xl border transition-all cursor-pointer shadow-2xs shrink-0 flex items-center justify-center ${activeScheduleTime
+                                ? "bg-accent text-white border-accent"
+                                : "bg-surface-2 hover:bg-surface-3 border-border-subtle text-secondary hover:text-accent"
+                                }`}
                             title="Schedule Download (Night Mode / Off-Peak Queue)"
                         >
                             <Moon size={16} />
